@@ -3,7 +3,6 @@
 Retina-UNETR for Ultrasound Needle Localization
 
 ### Code Directory Layout
-The file structure in your code directory should be:
 ```
 dlmi_final/
     ├── README.md
