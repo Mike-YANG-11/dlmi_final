@@ -38,7 +38,7 @@ dlmi_final/
 - `train.py`
   - The main training script. Run `python train.py` to train the model.
   - The directory paths should be modified in the `construct_datasets()` function.
-  - Hyperparameters can be modified in this script function `main()`.
+  - Hyperparameters can be modified in the `main()` function.
 - `logs/`
   - Contains the logs for the training process.
 - `video_unetr_checkpoints/`
