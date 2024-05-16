@@ -33,7 +33,7 @@ dlmi_final/
 - `evaluation.py`
   - Evaluation functions based on the segmentation results.
 - `visualization.py`
-  - Visualization function for showing the training data before training & model predictions results during training.
+  - Visualization function for showing the training data before training & predictions results during training.
   - The visualization function can be disabled by setting `visualize = False` in the `train.py` script.
 - `train.py`
   - The main training script. Run `python train.py` to train the model.
