@@ -1,6 +1,6 @@
 # dlmi_final
 
-Retina-UNETR for Ultrasound Needle Localization
+## Retina-UNETR for Ultrasound Video Needle Localization
 
 ### Code Directory Layout
 ```
