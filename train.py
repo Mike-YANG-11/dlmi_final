@@ -23,7 +23,7 @@ from dataset import CustomDataset, Augmentation
 from evaluation import evaluate, dice_score, iou_score, recall_score, precision_score
 from visualization import show_image_pairs
 from video_unetr import VideoUnetr
-from loss import FocalLoss, DiceLoss
+from loss import SegFocalLoss, SegDiceLoss
 
 import json
 
@@ -365,8 +365,8 @@ def main():
     scheduler = lr_scheduler.LinearLR(optimizer, start_factor=1, end_factor=0.1, total_iters=epochs)
 
     # loss functions
-    focal_loss = FocalLoss(alpha=0.75, gamma=2).to(device)
-    dice_loss = DiceLoss().to(device)
+    seg_focal_loss = SegFocalLoss(alpha=0.75, gamma=2).to(device)
+    seg_dice_loss = SegDiceLoss().to(device)
 
     # Start a new wandb run to track this script
     wandb.init(
@@ -401,8 +401,8 @@ def main():
         train_loader,
         valid_loader,
         optimizer,
-        focal_loss,
-        dice_loss,
+        seg_focal_loss,
+        seg_dice_loss,
         device,
         epochs,
         logger,

@@ -134,7 +134,7 @@ class ResNet(nn.Module):
 
     def __init__(self, num_classes, block, layers):
         super().__init__()
-        
+
         # --------------------------------------------------------------------------
         # ResNet Backbone
         self.inplanes = 64
@@ -176,7 +176,7 @@ class ResNet(nn.Module):
 
         self.clipBoxes = ClipBoxes()
 
-        self.focalLoss = loss.DetectFocalLoss()
+        self.focalLoss = loss.DetFocalLoss()
         # --------------------------------------------------------------------------
 
         # --------------------------------------------------------------------------
