@@ -11,7 +11,7 @@ import torch.nn.functional as F
 
 # Focal Loss for Segmentation
 class FocalLoss(nn.Module):
-    def __init__(self, alpha=0.75, gamma=2):
+    def __init__(self, alpha=-1, gamma=2):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
@@ -21,12 +21,14 @@ class FocalLoss(nn.Module):
         preds = preds.reshape(-1)  # [N, 1, H, W] -> [N*H*W]
         targets = targets.reshape(-1)  # [N, 1, H, W] -> [N*H*W]
 
-        alpha_factor = torch.where(targets == 1, self.alpha, 1.0 - self.alpha)
-
         # compute binary cross-entropy
         bce_loss = F.binary_cross_entropy(preds, targets, reduction="none")
-        pt = torch.exp(-bce_loss)
-        focal_loss = alpha_factor * (1 - pt) ** self.gamma * bce_loss
+        p_t = preds * targets + (1 - preds) * (1 - targets)
+        focal_loss = ((1 - p_t) ** self.gamma) * bce_loss
+
+        if self.alpha >= 0:
+            alpha_factor = self.alpha * targets + (1 - self.alpha) * (1 - targets)
+            focal_loss = alpha_factor * focal_loss
 
         return focal_loss.mean()
 
@@ -144,7 +146,7 @@ class DetectFocalLoss(nn.Module):
         classification_losses = []
         regression_losses = []
 
-        anchor = anchors[0, :, :]
+        anchor = anchors[0, :, :]  # with shape (number of total anchors, 4)
 
         anchor_widths = anchor[:, 2] - anchor[:, 0]
         anchor_heights = anchor[:, 3] - anchor[:, 1]
@@ -157,11 +159,16 @@ class DetectFocalLoss(nn.Module):
             regression = regressions[j, :, :]
 
             bbox_annotation = annotations[j, :, :]
-            bbox_annotation = bbox_annotation[bbox_annotation[:, 4] != -1]
+            # boxes[idx, 0] = x1
+            # boxes[idx, 1] = y1
+            # boxes[idx, 2] = x2
+            # boxes[idx, 3] = y2
+            # boxes[idx, 4] = cls_id
+            bbox_annotation = bbox_annotation[bbox_annotation[:, 4] != -1]  # remove the bbox with class_id = -1
 
             classification = torch.clamp(classification, 1e-4, 1.0 - 1e-4)
 
-            if bbox_annotation.shape[0] == 0:
+            if bbox_annotation.shape[0] == 0:  # no annotations for this image
                 if torch.cuda.is_available():
                     alpha_factor = torch.ones(classification.shape).cuda() * alpha
 
