@@ -17,7 +17,10 @@ dlmi_final/
     └── mae_pretrain_vit_base_checkpoints/
         └── mae_pretrain_vit_base.pth
 ```
-
+## Set up
+```
+conda env create -f environment.yml
+```
 ## File Functionalities
 - `dataset.py`
   - Contains the custom dataset and augmentation classes.
