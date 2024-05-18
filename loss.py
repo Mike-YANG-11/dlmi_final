@@ -288,3 +288,99 @@ class DetectFocalLoss(nn.Module):
         return torch.stack(classification_losses).mean(dim=0, keepdim=True), torch.stack(regression_losses).mean(
             dim=0, keepdim=True
         )
+
+
+## SIoU + needle cost for Object Detection
+class SIoULoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.eps = 1e-7 ## avoid dividing 0
+        self.needle_angle_cost_weight = 2 
+    
+    def length_angle_to_endpoint_coordinates(self, bboxs):
+        """ Assume input_tensor is of shape (batch_size, 4) 
+            and each row is [center_x (x2), center_y (y2), angles_radians, length]
+        """
+        
+        # Extract components
+        centers = bboxs[:, :2]  # shape (batch_size, 2)
+        angles_radians = bboxs[:, 2]   # shape (batch_size,)
+        lengths = bboxs[:, 3]  # shape (batch_size,)
+        
+        # Calculate half-length offsets
+        dx = 0.5 * lengths * torch.cos(angles_radians)
+        dy = 0.5 * lengths * torch.sin(angles_radians)
+        
+        # Calculate the endpoints
+        dx = dx.unsqueeze(1)  # Reshape for broadcasting, shape (batch_size, 1)
+        dy = dy.unsqueeze(1)  # Reshape for broadcasting, shape (batch_size, 1)
+        
+        endpoints_1 = centers - torch.cat((dx, dy), dim=1)  # shape (batch_size, 2)
+        endpoints_2 = centers + torch.cat((dx, dy), dim=1)  # shape (batch_size, 2)
+        
+        # Combine endpoints into one tensor
+        endpoints = torch.cat((endpoints_1, endpoints_2), dim=1)  # shape (batch_size, 4)
+        # print(f'endppoints {endpoints}\n{endpoints.shape}')
+        return endpoints
+
+    ## https://learnopencv.com/yolo-loss-function-siou-focal-loss/#aioseo-pytorch-implementation
+    def forward(self, preds, targets): ## [B, 4]
+        
+        pred_endpoints = self.length_angle_to_endpoint_coordinates(preds)  ## get (x1,y1, x3,y3) 
+        gt_endpoints =  self.length_angle_to_endpoint_coordinates(targets)   ## TODO: use original value from json?
+        pred_angles_degrees = preds[:, 2]   # shape (batch_size,)
+        gt_angles_degrees = targets[:, 2]   # shape (batch_size,)
+
+        ## get bottom-left corner (x0, y0) and up-right corner (x1, y1)
+        ## torch max or min output a tuple of two tensors (value, indice)
+        permute_pred_endpoints = torch.index_select(pred_endpoints, 1, torch.LongTensor([0,2,1,3]).cuda()) ## (x1, x3, y1, y3)
+        permute_gt_endpoints = torch.index_select(gt_endpoints, 1, torch.LongTensor([0,2,1,3]).cuda()) 
+        b1_x0, b1_y0 = torch.min(permute_pred_endpoints[:,:2], 1)[0], torch.min(permute_pred_endpoints[:,2:], 1)[0] 
+        b1_x1, b1_y1 = torch.max(permute_pred_endpoints[:,:2], 1)[0], torch.max(permute_pred_endpoints[:,2:], 1)[0]
+        b2_x0, b2_y0 = torch.min(permute_gt_endpoints[:,:2], 1)[0], torch.max(permute_gt_endpoints[:,2:], 1)[0]
+        b2_x1, b2_y1 = torch.max(permute_gt_endpoints[:,:2], 1)[0], torch.max(permute_gt_endpoints[:,2:], 1)[0]
+
+        # Intersection area
+        inter = (torch.min(b1_x1, b2_x1) - torch.max(b1_x0, b2_x0)).clamp(0) * \
+                (torch.min(b1_y1, b2_y1) - torch.max(b1_y0, b2_y0)).clamp(0)
+
+        # Union Area
+        w1, h1 = b1_x1 - b1_x0, b1_y1 - b1_y0 + self.eps
+        w2, h2 = b2_x1 - b2_x0, b2_y1 - b2_y0 + self.eps
+        union = w1 * h1 + w2 * h2 - inter + self.eps
+ 
+        # IoU value of the bounding boxes
+        iou = inter / union
+        cw = torch.max(b1_x1, b2_x1) - torch.min(b1_x0, b2_x0)  # convex (smallest enclosing box) width
+        ch = torch.max(b1_y1, b2_y1) - torch.min(b1_y0, b2_y0)  # convex height
+        s_cw = (b2_x0 + b2_x1 - b1_x0 - b1_x1) * 0.5
+        s_ch = (b2_y0 + b2_y1 - b1_y0 - b1_y1) * 0.5
+        sigma = torch.pow(s_cw ** 2 + s_ch ** 2, 0.5) + self.eps
+        sin_alpha_1 = torch.abs(s_cw) / sigma
+        sin_alpha_2 = torch.abs(s_ch) / sigma
+        threshold = pow(2, 0.5) / 2
+        sin_alpha = torch.where(sin_alpha_1 > threshold, sin_alpha_2, sin_alpha_1)
+            
+        # Angle Cost
+        angle_cost = 1 - 2 * torch.pow( torch.sin(torch.arcsin(sin_alpha) - np.pi/4), 2)
+        # print(f"angle {angle_cost}")
+            
+        # Distance Cost
+        rho_x = (s_cw / (cw + self.eps)) ** 2
+        rho_y = (s_ch / (ch + self.eps)) ** 2
+        gamma = 2 - angle_cost
+        distance_cost = 2 - torch.exp(gamma * rho_x) - torch.exp(gamma * rho_y)
+        # print(f"dist {distance_cost}")
+            
+        # Shape Cost
+        omiga_w = torch.abs(w1 - w2) / torch.max(w1, w2)
+        omiga_h = torch.abs(h1 - h2) / torch.max(h1, h2)
+        shape_cost = torch.pow(1 - torch.exp(-1 * omiga_w), 4) + torch.pow(1 - torch.exp(-1 * omiga_h), 4)
+        # print(f"shape {shape_cost}")
+        
+        ## Needle Angle Cost
+        sin_needle_angle  =  torch.sin(gt_angles_degrees - pred_angles_degrees) ## sine should be as close to 0 as possibile
+        needle_angle_cost = torch.pow(sin_needle_angle, 2) ## fix negative value
+        # print(f"needle angle {needle_angle_cost}")
+        
+        return 1 - (iou + 0.5 * (distance_cost + shape_cost)) + needle_angle_cost *self.needle_angle_cost_weight

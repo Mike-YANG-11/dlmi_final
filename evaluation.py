@@ -245,8 +245,9 @@ def evaluate(model, loader, focal_loss, dice_loss, device):
     total_fn_count = 0
 
     with torch.no_grad():
-        for step, (images, masks) in enumerate(tqdm(loader)):
-            images, masks = images.to(device), masks.to(device)
+        for step, samples in enumerate(tqdm(loader)):
+            images = samples["images"].to(device)
+            masks = samples["masks"].to(device)
 
             # Forward pass
             preds = model(images)

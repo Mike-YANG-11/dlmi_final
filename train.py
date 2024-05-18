@@ -25,143 +25,50 @@ from visualization import show_image_pairs
 from video_unetr import VideoUnetr
 from loss import FocalLoss, DiceLoss
 
+import json
+
+with open('config.json', 'r', encoding="utf-8") as f:
+    config = json.load(f)
 
 # Construct the datasets
 def construct_datasets(image_size, batch_size, t):
     train_transform = Augmentation(color_jitter=True, resized_crop=True, horizontal_flip=True, image_size=image_size)
     valid_transform = Augmentation(color_jitter=False, resized_crop=False, horizontal_flip=True, image_size=image_size)
+    
+    train_dataset_list = []
+    for folder_name in config["Data"]["Train_folder"].values():
+        subdataset = CustomDataset(f"{config["Data"]["folder_dir"]}/{folder_name}", transform=train_transform, time_window=t)
+        train_dataset_list.append(subdataset)
+    
+    valid_dataset_list = []
+    for folder_name in config["Data"]["Val_folder"].values():
+        subdataset = CustomDataset(f"{config["Data"]["folder_dir"]}/{folder_name}", transform=valid_transform, time_window=t)
+        valid_dataset_list.append(subdataset)
 
-    """ easy datasets """
-    # 20231017_08
-    easy_2220 = CustomDataset("./data/Sonosite_20231017_0833_2220frames_abc", transform=train_transform, time_window=t)
-    # easy_1941 = CustomDataset("./data/Sonosite_20231017_0836_1941frames_abc")
-
-    # 20231107_14
-    easy_2097 = CustomDataset(
-        "./data/Sonosite_20231107_1456_2097frames_abc", transform=valid_transform, time_window=t
-    )  # validation set
-
-    # 20231128_12
-    easy_1429 = CustomDataset("./data/Sonosite_20231128_1220_1429frames_abc", transform=train_transform, time_window=t)
-    easy_1063 = CustomDataset("./data/Sonosite_20231128_1259_1063frames_abc", transform=train_transform, time_window=t)
-
-    # 20231128_14
-    easy_270 = CustomDataset("./data/Sonosite_20231128_1423-1_270frames_abc", transform=train_transform, time_window=t)
-    easy_1295 = CustomDataset(
-        "./data/Sonosite_20231128_1423-2_1295frames_abc", transform=train_transform, time_window=t
-    )
-    easy_1058 = CustomDataset("./data/Sonosite_20231128_1429_1058frams_abc", transform=train_transform, time_window=t)
-
-    # 20231201_09
-    easy_679 = CustomDataset(
-        "./data/Sonosite_20231201_0910_679frams_abc", transform=valid_transform, time_window=t
-    )  # validation set
-    easy_1530 = CustomDataset(
-        "./data/Sonosite_20231201_0913_1530frames_abc", transform=valid_transform, time_window=t
-    )  # validation set
-    easy_1148 = CustomDataset(
-        "./data/Sonosite_20231201_0921_1148frames_abc", transform=valid_transform, time_window=t
-    )  # validation set
-
-    """ easy & medium datasets """
-    # 20231110_09
-    easy_284 = CustomDataset("./data/Sonosite_20231110_0903-2_284frames_abc", transform=train_transform, time_window=t)
-    medium_1903 = CustomDataset(
-        "./data/Sonosite_20231110_0910_1903frames_abc", transform=train_transform, time_window=t
-    )
-
-    """ medium datasets """
-    # 20231003_09
-    medium_1120 = CustomDataset(
-        "./data/Sonosite_20231003_0945_1120frames_abc", transform=valid_transform, time_window=t
-    )  # test set
-
-    # 20231003_10
-    medium_755 = CustomDataset(
-        "./data/Sonosite_20231003_1028_755frames_abc", transform=valid_transform, time_window=t
-    )  # test set
-
-    # 20231024_09
-    medium_990 = CustomDataset(
-        "./data/Sonosite_20231024_0909_990frames_abc", transform=valid_transform, time_window=t
-    )  # test set
-
-    # 20231024_12
-    medium_1704 = CustomDataset(
-        "./data/Sonosite_20231024_1228_1704frames_abc", transform=valid_transform, time_window=t
-    )  # test set
-
-    """ hard datasets """
-    # 20230613_10
-    hard_574 = CustomDataset(
-        "./data/Sonosite_20230613_1033_574frames_abc", transform=valid_transform, time_window=t
-    )  # test set
-
-    # 20230613_13
-    hard_549 = CustomDataset(
-        "./data/Sonosite_20230613_1329_549frames_abc", transform=valid_transform, time_window=t
-    )  # test set
-
-    # 20231024_15
-    hard_412 = CustomDataset(
-        "./data/Sonosite_20231024_1520_412frames_abc", transform=valid_transform, time_window=t
-    )  # test set
-
-    # 20231031_13
-    hard_950 = CustomDataset(
-        "./data/Sonosite_20231031_1322_950frames_abc", transform=valid_transform, time_window=t
-    )  # test set
-    hard_1320 = CustomDataset(
-        "./data/Sonosite_20231031_1345_1320frames_abc", transform=valid_transform, time_window=t
-    )  # test set
-
+    test_med_dataset_list = []
+    for folder_name in config["Data"]["Test_folder"]["Medium"].values():
+        subdataset = CustomDataset(f"{config["Data"]["folder_dir"]}/{folder_name}", transform=valid_transform, time_window=t)
+        test_med_dataset_list.append(subdataset)
+    
+    test_hard_dataset_list = []
+    for folder_name in config["Data"]["Val_folder"]["Hard"].values():
+        subdataset = CustomDataset(f"{config["Data"]["folder_dir"]}/{folder_name}", transform=valid_transform, time_window=t)
+        test_hard_dataset_list.append(subdataset)
+    
     """ training dataset """
-    train_dataset = ConcatDataset(
-        [
-            easy_2220,
-            easy_1429,
-            easy_1063,
-            easy_270,
-            easy_1295,
-            easy_1058,
-            easy_284,
-            medium_1903,
-        ]
-    )
+    train_dataset = ConcatDataset(train_dataset_list)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
 
     """ validation dataset """
-    valid_dataset = ConcatDataset(
-        [
-            easy_2097,
-            easy_679,
-            easy_1530,
-            easy_1148,
-        ]
-    )
+    valid_dataset = ConcatDataset(valid_dataset_list)
     valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=True, drop_last=False)
 
     """ medium test dataset """
-    medium_test_dataset = ConcatDataset(
-        [
-            medium_1120,
-            medium_755,
-            medium_990,
-            medium_1704,
-        ]
-    )
+    medium_test_dataset = ConcatDataset(test_med_dataset_list)
     medium_test_loader = DataLoader(medium_test_dataset, batch_size=batch_size, shuffle=True, drop_last=False)
 
     """ hard test dataset """
-    hard_test_dataset = ConcatDataset(
-        [
-            hard_574,
-            hard_549,
-            hard_412,
-            hard_950,
-            hard_1320,
-        ]
-    )
+    hard_test_dataset = ConcatDataset(test_hard_dataset_list)
     hard_test_loader = DataLoader(hard_test_dataset, batch_size=batch_size, shuffle=True, drop_last=False)
 
     print(f"Number of training samples: {len(train_dataset)}")
@@ -224,8 +131,9 @@ def train(
             "Precision Score": 0.0,
         }
 
-        for step, (images, masks) in enumerate(tqdm(train_loader)):
-            images, masks = images.to(device), masks.to(device)
+        for step, samples in enumerate(tqdm(train_loader)):
+            images = samples["images"].to(device)
+            masks = samples["masks"].to(device)
 
             # Forward pass
             preds = model(images)  # [N, 1, H, W]
@@ -290,9 +198,10 @@ def train(
                 print("Visualizing the output on training data...")
                 model.eval()
                 with torch.no_grad():
-                    for _, (train_images, train_masks) in enumerate(train_loader):
+                    for _, vis_samples in enumerate(train_loader):
                         # Move to device & forward pass
-                        train_images = train_images.to(device)
+                        train_images = vis_samples["images"].to(device)
+                        train_masks = vis_samples["masks"]
                         train_preds = model(train_images)
 
                         # Detach and move to CPU
@@ -307,9 +216,10 @@ def train(
                 print("Visualizing the output on validation data...")
                 model.eval()
                 with torch.no_grad():
-                    for _, (val_images, val_masks) in enumerate(valid_loader):
+                    for _, val_samples in enumerate(valid_loader):
                         # Move to device & forward pass
-                        val_images = val_images.to(device)
+                        val_images = val_samples["images"].to(device)
+                        val_masks = val_samples["masks"]
                         val_preds = model(val_images)
 
                         # Detach and move to CPU
@@ -397,8 +307,8 @@ def main():
     # Show the first batch of training data
     if visualize:
         print("Visualizing the first batch of training data...")
-        for _, (images, masks) in enumerate(train_loader):
-            show_image_pairs(consec_images=images, consec_masks=masks)
+        for _, samples in enumerate(train_loader):
+            show_image_pairs(consec_images=samples["images"], consec_masks=samples["masks"])
             break
 
     # Set the name of the experiment for wandb logging

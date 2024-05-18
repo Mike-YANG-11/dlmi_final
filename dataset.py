@@ -10,7 +10,8 @@ import torch.nn as nn
 import torchvision.transforms as tf
 
 from torch.utils.data import Dataset
-
+from PIL import Image
+import json
 
 # Custom Dataset Class
 class CustomDataset(Dataset):
@@ -29,6 +30,9 @@ class CustomDataset(Dataset):
         self.mask_names = [
             "m" + f[1:-4] + "_lw_20.png" for f in self.image_names
         ]  # ["m0001_lw_20.png", "m0002_lw_20.png", ...]
+        self.json_names = [
+            f.replace(".jpg", ".json") for f in self.image_names
+        ]
 
         # creat T consecutive image & mask names list
         self.consec_images_names = [
@@ -37,38 +41,71 @@ class CustomDataset(Dataset):
         self.consec_masks_names = [
             self.mask_names[i : i + self.time_window] for i in range(0, len(self.mask_names) - self.time_window + 1)
         ]  # [["m0001_lw_20.png", "m0002_lw_20.png", "m0003_lw_20.png"], ["m0002_lw_20.png", "m0003_lw_20.png", "m0004_lw_20.png"], ...]
-
+        self.consec_json_names = [
+            self.json_names[i : i + self.time_window] for i in range(0, len(self.json_names) - self.time_window + 1)
+        ]
         self.transform = transform
+        self.trans_totensor = tf.Compose([ tf.ToTensor() ])
 
     def __len__(self):
         return len(self.consec_images_names)
 
     def __getitem__(self, idx):
         consec_images_name = self.consec_images_names[idx]  # ["a0001.jpg", "a0002.jpg", "a0003.jpg"]
-        consec_images = [
-            cv2.imread(os.path.join(self.dir_path, image_name), cv2.IMREAD_GRAYSCALE)
-            for image_name in consec_images_name
-        ]
+        consec_images = []
+        for f_name in consec_images_name:
+            img = Image.open(os.path.join(self.dir_path, f_name)).convert('L')
+            img_tensor = self.trans_totensor(img)
+            # img_tensor.unsqueeze_(0)
+            consec_images.append(img_tensor)
+            img.close()
+        consec_images = torch.cat(consec_images, dim = 0) ## [T, H, W]
 
         consec_masks_name = self.consec_masks_names[idx]  # ["m0001_lw_20.png", "m0002_lw_20.png", "m0003_lw_20.png"]
-        consec_masks = [
-            cv2.imread(os.path.join(self.dir_path, mask_name), cv2.IMREAD_GRAYSCALE) for mask_name in consec_masks_name
-        ]
+        consec_masks = []
+        for f_name in consec_masks_name:
+            img = Image.open(os.path.join(self.dir_path, f_name)).convert('L')
+            img_tensor = self.trans_totensor(img)
+            # img_tensor.unsqueeze_(0)
+            consec_masks.append(img_tensor)
+            img.close()
+        consec_masks = torch.cat(consec_masks, dim = 0) ## [T, H, W]
+        
+        ## BBox and Cls
+        consec_json_name = self.consec_json_names[idx]  # ["a0001.json", "a0002.json", "a0003.json"]
+        consec_bboxes = []
+        consec_labels = []
+        for f_name in consec_json_name:
+            with open(os.path.join(self.dir_path, f_name), 'r') as f:
+                js = json.load(f)
+                # print(js)
+            if len(js["shapes"]) >= 1:  ## annotated with upper needle
 
-        # To tensor
-        for i in range(self.time_window):
-            consec_images[i] = torch.tensor(consec_images[i], dtype=torch.float32)
-            consec_masks[i] = torch.tensor(consec_masks[i], dtype=torch.float32)
-
-        # Stack
-        consec_images = torch.stack(consec_images, dim=0)  # [T, H, W]
-        consec_masks = torch.stack(consec_masks, dim=0)  # [T, H, W]
+                bbox = [js["shapes"][1]["center"][0], 
+                        js["shapes"][1]["center"][1],
+                        js["shapes"][1]["theta"],
+                        js["shapes"][1]["length"]]
+                label = 1  ## TODO: other cls?
+            elif len(js["shapes"]) == 1:  ## annotated with needle
+                bbox = [js["shapes"][0]["center"][0], 
+                        js["shapes"][0]["center"][1],
+                        js["shapes"][0]["theta"],
+                        js["shapes"][0]["length"]]
+                label = 1 
+            else:
+                bbox = [0,0,0,0]
+                label = 0
+            consec_bboxes.append(torch.as_tensor(bbox))
+            consec_labels.append(torch.as_tensor(label))
+            f.close()
+        consec_bboxes = torch.stack(consec_bboxes, dim = 0) ## [T, 4]
+        consec_labels = torch.stack(consec_labels, dim = 0).long() ## [T,]
 
         # Unsqueeze
         consec_images = consec_images.unsqueeze(1)  # [T, 1, H, W]
         consec_masks = consec_masks.unsqueeze(1)  # [T, 1, H, W]
 
-        # Apply transform
+        # Apply transform  ## TODO: fix bbox crop!!
         if self.transform:
             consec_images, consec_masks = self.transform(consec_images, consec_masks)
 
@@ -76,7 +113,13 @@ class CustomDataset(Dataset):
         consec_images = consec_images.squeeze(1)  # [T, H, W]
         consec_masks = consec_masks.squeeze(1)  # [T, H, W]
 
-        return consec_images, consec_masks
+        sample = {
+            "images": consec_images,
+            "masks" : consec_masks,
+            "bboxes": consec_bboxes,
+            "labels": consec_labels
+        }
+        return sample
 
 
 # Augmentation Class

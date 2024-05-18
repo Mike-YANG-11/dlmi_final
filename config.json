@@ -1,0 +1,44 @@
+{
+    "Data":{
+
+        "folder_dir" : "C:/Dropbox/家庭資料室/",
+
+        "Train_folder":{
+            "easy2220" : "Sonosite_20231017_0833_2220frames_abc(易)",
+            "easy1429" : "Sonosite_20231128_1220_1429frames_abc(易)(r)",
+            "easy1063" : "Sonosite_20231128_1259_1063frames_abc(易)",
+            "easy270"  : "Sonosite_20231128_1423-1_270frames_abc(易)(R)",
+            "easy1295" : "Sonosite_20231128_1423-2_1295frames_abc(易)(R)",
+            "easy1058" : "Sonosite_20231128_1429_1058frams_abc(易)(R)",
+            "easy284"  : "Sonosite_20231110_0903-2_284frames_abc(易)(R)",
+            "medium1903" : "Sonosite_20231110_0910_1903frames_abc(中)(R)"
+        },
+
+        "Val_folder":{
+            "easy2097" : "Sonosite_20231107_1456_2097frames_abc(易)(R2095_0200)",
+            "easy679"  : "Sonosite_20231201_0910_679frams_abc(易)(r)",
+            "easy1530" : "Sonosite_20231201_0913_1530frames_abc(易)(R)",
+            "easy1148" : "Sonosite_20231201_0921_1148frames_abc(易)（R）" 
+        },
+        
+        "Test_folder":{
+            "Medium":{
+                "medium1120" : "Sonosite_20231003_0945_1120frames_abc(中)",
+                "medium755"  : "Sonosite_20231003_1028_755frames_abc(中)",
+                "medium990"  : "Sonosite_20231024_0909_990frames_abc(中)",
+                "medium1704" : "Sonosite_20231024_1228_1704frames_abc(中)"
+            },
+
+            "Hard":{
+                "hard574" : "Sonosite_20230613_1033_574frames_abc(難)",
+                "hard549" : "Sonosite_20230613_1329_549frames_abc(難)",
+                "hard412" : "Sonosite_20231024_1520_412frames_abc(難)",
+                "hard950" : "Sonosite_20231031_1322_950frames_abc(難)",
+                "hard1320" : "Sonosite_20231031_1345_1320frames_abc(難)"
+            }
+        },
+
+        "easy1941" : "Sonosite_20231017_0836_1941frames_abc(易)(validation dataset)"
+
+    }
+}
