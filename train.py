@@ -33,7 +33,7 @@ with open('config.json', 'r', encoding="utf-8") as f:
 # Construct the datasets
 def construct_datasets(image_size, batch_size, t):
     train_transform = Augmentation(color_jitter=True, resized_crop=True, horizontal_flip=True, image_size=image_size)
-    valid_transform = Augmentation(color_jitter=False, resized_crop=False, horizontal_flip=True, image_size=image_size)
+    valid_transform = Augmentation(color_jitter=False, resized_crop=False, horizontal_flip=False, image_size=image_size)
     
     train_dataset_list = []
     for folder_name in config["Data"]["Train_folder"].values():
