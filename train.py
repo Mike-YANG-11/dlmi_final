@@ -306,8 +306,7 @@ def main(config):
         for _, samples in enumerate(train_loader):
             show_image_pairs(consec_images=samples["images"], consec_masks=samples["masks"])
             break
-    print('finish showing image')
-    return
+
     # Create the model
     video_unetr = VideoUnetr(
         img_size=config["Model"]["image_size"],
