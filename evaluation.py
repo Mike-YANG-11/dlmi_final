@@ -66,7 +66,7 @@ def precision_score(preds, masks):
     return precision
 
 
-# EA Score
+# EA Score by <Deep Hough Transform for Semantic Line Detection>
 # https://github.com/Hanqer/deep-hough-transform/blob/master/metric.py
 class Line(object):
     def __init__(self, coordinates=[0, 0, 1, 1]):
@@ -109,13 +109,54 @@ def sa_metric(angle_p, angle_g):
     d_angle = d_angle * 2 / np.pi
     return max(0, (1 - d_angle)) ** 2
 
-
 def se_metric(coord_p, coord_g, size):
     c_p = [(coord_p[0] + coord_p[2]) / 2, (coord_p[1] + coord_p[3]) / 2]
     c_g = [(coord_g[0] + coord_g[2]) / 2, (coord_g[1] + coord_g[3]) / 2]
     d_coord = np.abs(c_p[0] - c_g[0]) ** 2 + np.abs(c_p[1] - c_g[1]) ** 2
     d_coord = np.sqrt(d_coord) / max(size[0], size[1])
     return max(0, (1 - d_coord)) ** 2
+
+def len_metric(coord_p, coord_g, size):
+    len_p = np.sqrt((coord_p[0] + coord_p[2]) ** 2 + (coord_p[1] + coord_p[3]) ** 2)
+    len_g = np.sqrt((coord_g[0] + coord_g[2]) ** 2 + (coord_g[1] + coord_g[3]) ** 2)  ## bbox length for bbox branch, seg length for seg branch?
+    len_bias = abs(len_g - len_p)/ max(size[0], size[1])
+    return max(0, (1 - len_bias)) ** 2
+
+def mask2Line(idx, pca):
+    # Convert the binary mask to 2D point coordinate list
+    mask_2d = np.stack([idx[0], idx[1]], axis=1)
+    
+    # Fit PCA on the target mask points
+    pca.fit(mask_2d)
+    mask_1d = pca.transform(mask_2d)
+    mask_2d_new = pca.inverse_transform(mask_1d)
+    mask_2d_new = sorted(mask_2d_new, key=lambda x: x[0])
+    mask_line_end_points = [
+        int(mask_2d_new[0][1]),
+        int(mask_2d_new[0][0]),
+        int(mask_2d_new[-1][1]),
+        int(mask_2d_new[-1][0]),
+    ]
+    if mask_line_end_points[0] == mask_line_end_points[2]:
+        mask_line_end_points[2] += 1
+    if mask_line_end_points[1] == mask_line_end_points[3]:
+        mask_line_end_points[3] += 1
+    line = Line(mask_line_end_points)
+    return line
+
+def eal_metric(pred_idx, mask_idx, size):
+    # Find the line from the points in the binary mask using PCA
+    pca = PCA(n_components=1)
+
+    # Find the line from the points in the binary mask using PCA
+    pred_line = mask2Line(pred_idx, pca)
+    mask_line = mask2Line(mask_idx, pca)
+
+    # Calculate the EA score
+    se = se_metric(pred_line.coord, mask_line.coord, size=size)
+    sa = sa_metric(pred_line.angle(), mask_line.angle())
+    sl = len_metric(pred_line.coord, mask_line.coord, size=size)
+    return sa * se * sl
 
 
 def ea_metric(pred_idx, mask_idx, size):

@@ -39,15 +39,26 @@ class CustomDataset(Dataset):
         ]
 
         # creat T consecutive image & mask names list
-        self.consec_images_names = [
-            self.image_names[i : i + self.time_window] for i in range(0, len(self.image_names) - self.time_window + 1)
-        ]  # [["a0001.jpg", "a0002.jpg", "a0003.jpg"], ["a0002.jpg", "a0003.jpg", "a0004.jpg"], ...]
-        self.consec_masks_names = [
-            self.mask_names[i : i + self.time_window] for i in range(0, len(self.mask_names) - self.time_window + 1)
-        ]  # [["m0001_lw_20.png", "m0002_lw_20.png", "m0003_lw_20.png"], ["m0002_lw_20.png", "m0003_lw_20.png", "m0004_lw_20.png"], ...]
-        self.consec_json_names = [
-            self.json_names[i : i + self.time_window] for i in range(0, len(self.json_names) - self.time_window + 1)
-        ]
+        if time_window == 1:  ## duplicate
+            self.consec_images_names = [
+                [self.image_names[i]] * 3 for i in range(0, len(self.image_names) - self.time_window + 1)
+            ]  # [["a0001.jpg", "a0002.jpg", "a0003.jpg"], ["a0002.jpg", "a0003.jpg", "a0004.jpg"], ...]
+            self.consec_masks_names = [
+                [self.mask_names[i]] * 3 for i in range(0, len(self.mask_names) - self.time_window + 1)
+            ]  # [["m0001_lw_20.png", "m0002_lw_20.png", "m0003_lw_20.png"], ["m0002_lw_20.png", "m0003_lw_20.png", "m0004_lw_20.png"], ...]
+            self.consec_json_names = [
+                [self.json_names[i]] * 3 for i in range(0, len(self.json_names) - self.time_window + 1)
+            ]  
+        else:          
+            self.consec_images_names = [
+                self.image_names[i : i + self.time_window] for i in range(0, len(self.image_names) - self.time_window + 1)
+            ]  # [["a0001.jpg", "a0002.jpg", "a0003.jpg"], ["a0002.jpg", "a0003.jpg", "a0004.jpg"], ...]
+            self.consec_masks_names = [
+                self.mask_names[i : i + self.time_window] for i in range(0, len(self.mask_names) - self.time_window + 1)
+            ]  # [["m0001_lw_20.png", "m0002_lw_20.png", "m0003_lw_20.png"], ["m0002_lw_20.png", "m0003_lw_20.png", "m0004_lw_20.png"], ...]
+            self.consec_json_names = [
+                self.json_names[i : i + self.time_window] for i in range(0, len(self.json_names) - self.time_window + 1)
+            ]
         self.transform = transform
         self.trans_totensor = tf.Compose([ tf.ToTensor() ])
 
@@ -94,7 +105,7 @@ class CustomDataset(Dataset):
                         js["shapes"][1]["points"][0][1],
                         js["shapes"][1]["points"][1][0],
                         js["shapes"][1]["points"][1][1]]
-                print('bbox', bbox, 'end', endpoint)
+                # print('bbox', bbox, 'end', endpoint)
                 label = 1  ## TODO: other cls?
             elif len(js["shapes"]) == 1:  ## annotated with needle
                 bbox = [js["shapes"][0]["center"][0], 

@@ -40,5 +40,26 @@
 
         "easy1941" : "Sonosite_20231017_0836_1941frames_abc(易)(validation dataset)"
 
+    },
+
+    "Model":{
+        "image_size" : 224,
+        "time_window" : 3,
+        "patch_size" : 16,
+        "embed_dim" : 768,
+        "depth" : 12,
+        "num_heads" : 12,
+        "mlp_ratio" : 4,
+        "skip_chans" : [64, 128, 256]
+    },
+    
+    "Train":{
+        "experiment_id" : 0,
+        "visualize" : true,
+
+        "batch_size" : 8,
+        "epochs" : 20,
+        "blr" : 1.0e-4,
+        "accumulation_steps" : 8
     }
 }
