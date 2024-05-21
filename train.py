@@ -27,32 +27,34 @@ from loss import SegFocalLoss, SegDiceLoss
 
 import json
 
-with open('config.json', 'r', encoding="utf-8") as f:
-    config = json.load(f)
 
 # Construct the datasets
-def construct_datasets(image_size, batch_size, t):
+def construct_datasets(config):
+    image_size = config["Model"]["image_size"]
+    batch_size = config["Train"]["batch_size"]
+    t = config["Model"]["time_window"]
+
     train_transform = Augmentation(color_jitter=True, resized_crop=True, horizontal_flip=True, image_size=image_size)
-    valid_transform = Augmentation(color_jitter=False, resized_crop=False, horizontal_flip=True, image_size=image_size)
+    valid_transform = Augmentation(color_jitter=False, resized_crop=False, horizontal_flip=False, image_size=image_size)
     
     train_dataset_list = []
     for folder_name in config["Data"]["Train_folder"].values():
-        subdataset = CustomDataset(f"{config["Data"]["folder_dir"]}/{folder_name}", transform=train_transform, time_window=t)
+        subdataset = CustomDataset(os.path.join(config["Data"]["folder_dir"],folder_name), transform=train_transform, time_window=t)
         train_dataset_list.append(subdataset)
     
     valid_dataset_list = []
     for folder_name in config["Data"]["Val_folder"].values():
-        subdataset = CustomDataset(f"{config["Data"]["folder_dir"]}/{folder_name}", transform=valid_transform, time_window=t)
+        subdataset = CustomDataset(os.path.join(config["Data"]["folder_dir"],folder_name), transform=valid_transform, time_window=t)
         valid_dataset_list.append(subdataset)
 
     test_med_dataset_list = []
     for folder_name in config["Data"]["Test_folder"]["Medium"].values():
-        subdataset = CustomDataset(f"{config["Data"]["folder_dir"]}/{folder_name}", transform=valid_transform, time_window=t)
+        subdataset = CustomDataset(os.path.join(config["Data"]["folder_dir"],folder_name), transform=valid_transform, time_window=t)
         test_med_dataset_list.append(subdataset)
     
     test_hard_dataset_list = []
-    for folder_name in config["Data"]["Val_folder"]["Hard"].values():
-        subdataset = CustomDataset(f"{config["Data"]["folder_dir"]}/{folder_name}", transform=valid_transform, time_window=t)
+    for folder_name in config["Data"]["Test_folder"]["Hard"].values():
+        subdataset = CustomDataset(os.path.join(config["Data"]["folder_dir"],folder_name), transform=valid_transform, time_window=t)
         test_hard_dataset_list.append(subdataset)
     
     """ training dataset """
@@ -269,15 +271,9 @@ def train(
     print("Finished Training!")
 
 
-def main():
-    # Set Experiment ID for logging
-    experiment_id = 0
+def main(config):
 
-    # Basic settings
-    image_size = 224
-    batch_size = 8
-    t = 3  # Time window size
-    visualize = True  # Set to True to visualize the training data & model output
+    visualize = config["Train"]["visualize"]  # Set to True to visualize the training data & model output
 
     # Set random seed for reproducibility
     random.seed(0)
@@ -294,7 +290,7 @@ def main():
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
     file_handler = logging.FileHandler(
-        f"./logs/{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_exp_{experiment_id}.log"
+        f"./logs/{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_exp_{config['Train']['experiment_id']}.log"
     )
     file_handler.setLevel(logging.INFO)
     formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -302,7 +298,7 @@ def main():
     logger.addHandler(file_handler)
 
     # Construct the datasets
-    train_loader, valid_loader, medium_test_loader, hard_test_loader = construct_datasets(image_size, batch_size, t)
+    train_loader, valid_loader, medium_test_loader, hard_test_loader = construct_datasets(config)
 
     # Show the first batch of training data
     if visualize:
@@ -311,27 +307,16 @@ def main():
             show_image_pairs(consec_images=samples["images"], consec_masks=samples["masks"])
             break
 
-    # Set the name of the experiment for wandb logging
-    name = f"Video-UNETR-{experiment_id}"
-
-    # Define the model parameters
-    patch_size = 16
-    embed_dim = 768
-    depth = 12
-    num_heads = 12
-    mlp_ratio = 4
-    skip_chans = [64, 128, 256]
-
     # Create the model
     video_unetr = VideoUnetr(
-        img_size=image_size,
-        patch_size=patch_size,
-        embed_dim=embed_dim,
-        depth=depth,
-        num_heads=num_heads,
-        mlp_ratio=mlp_ratio,
+        img_size=config["Model"]["image_size"],
+        patch_size=config["Model"]["patch_size"],
+        embed_dim=config["Model"]["embed_dim"],
+        depth=config["Model"]["depth"],
+        num_heads=config["Model"]["num_heads"],
+        mlp_ratio=config["Model"]["mlp_ratio"],
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        skip_chans=skip_chans,
+        skip_chans=config["Model"]["skip_chans"],
         out_chans=1,
     )
 
@@ -351,22 +336,19 @@ def main():
     # number of parameters in the model
     num_params = sum(p.numel() for p in video_unetr.parameters())
 
-    # training epochs
-    epochs = 20
-
-    # learning rate & optimizer
-    blr = 1.0e-4
-    accumulation_steps = 8
-    eff_batch_size = accumulation_steps * batch_size
-    lr = blr * eff_batch_size / 256
+    eff_batch_size = config["Train"]["accumulation_steps"] * config["Train"]["batch_size"]
+    lr = config["Train"]["blr"] * eff_batch_size / 256
 
     # optimizer & scheduler
     optimizer = torch.optim.AdamW(video_unetr.parameters(), lr=lr)
-    scheduler = lr_scheduler.LinearLR(optimizer, start_factor=1, end_factor=0.1, total_iters=epochs)
+    scheduler = lr_scheduler.LinearLR(optimizer, start_factor=1, end_factor=0.1, total_iters=config["Train"]["epochs"])
 
     # loss functions
     seg_focal_loss = SegFocalLoss(alpha=0.75, gamma=2).to(device)
     seg_dice_loss = SegDiceLoss().to(device)
+
+    # Set the name of the experiment for wandb logging
+    name = f"Video-UNETR-{config['Train']['experiment_id']}"  ## Experiment ID for logging
 
     # Start a new wandb run to track this script
     wandb.init(
@@ -377,17 +359,17 @@ def main():
         # track hyperparameters and run metadata
         config={
             "Architecture": "Video-UNETR",
-            "Time Window": t,
+            "Time Window": config["Model"]["time_window"],
             "ViT Pre-Trained Weights": vit_pretrained_weights,
-            "Skip Connection Channels": f"{skip_chans}",
+            "Skip Connection Channels": f"{config['Model']['skip_chans']}",
             "Number of Parameters": num_params,
             "Training Dataset": "easy_2220, easy_1429, easy_1063, easy_270, easy_1295, easy_1058, easy_284, medium_1903,",
             "Validation Dataset": "easy_2097, easy_679, easy_1530, easy_1148,",
-            "Image Size": image_size,
-            "Device Batch Size": batch_size,
+            "Image Size": config["Model"]["image_size"],
+            "Device Batch Size": config["Train"]["batch_size"],
             "Effective Batch Size": eff_batch_size,
-            "Epochs": epochs,
-            "Base Learning Rate": blr,
+            "Epochs": config["Train"]["epochs"],
+            "Base Learning Rate": config["Train"]["blr"],
             "Learning Rate Scheduler": "Linear Decay",
             "Optimizer": "AdamW",
             "Loss Functions": "Focal Loss + Dice Loss",
@@ -396,7 +378,7 @@ def main():
 
     # Train the model
     train(
-        experiment_id,
+        config["Train"]["experiment_id"],
         video_unetr,
         train_loader,
         valid_loader,
@@ -404,9 +386,9 @@ def main():
         seg_focal_loss,
         seg_dice_loss,
         device,
-        epochs,
+        config["Train"]["epochs"],
         logger,
-        accumulation_steps=accumulation_steps,
+        accumulation_steps=config["Train"]["accumulation_steps"],
         scheduler=scheduler,
         visualize=visualize,
     )
@@ -416,4 +398,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with open('config.json', 'r', encoding="utf-8") as f:
+        config = json.load(f)
+
+    main(config)
