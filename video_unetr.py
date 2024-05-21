@@ -38,9 +38,7 @@ class VideoUnetr(nn.Module):
             torch.zeros(1, num_patches + 1, embed_dim), requires_grad=False
         )  # fixed sin-cos embedding in later initialization
 
-        self.blocks = nn.ModuleList(
-            [Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer) for i in range(depth)]
-        )
+        self.blocks = nn.ModuleList([Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer) for i in range(depth)])
         self.norm = norm_layer(embed_dim)
         # --------------------------------------------------------------------------
 
@@ -66,13 +64,8 @@ class VideoUnetr(nn.Module):
         # --------------------------------------------------------------------------
 
         # --------------------------------------------------------------------------
-        # bottleneck block
-        self.bottem_up = nn.ConvTranspose2d(embed_dim, skip_chans[2], kernel_size=4, stride=2, padding=1)
-        self.bottem_res_block = ResidualBlock(skip_chans[2] * 2, skip_chans[2])
-        # --------------------------------------------------------------------------
-
-        # --------------------------------------------------------------------------
         # upsampling blocks
+        self.bottem_up = UpsampleBlock(embed_dim, skip_chans[2])
         self.up3 = UpsampleBlock(skip_chans[2], skip_chans[1])
         self.up2 = UpsampleBlock(skip_chans[1], skip_chans[0])
         self.up1 = nn.Sequential(
@@ -92,9 +85,7 @@ class VideoUnetr(nn.Module):
     def initialize_weights(self):
         # initialization
         # initialize (and freeze) pos_embed by sin-cos embedding
-        pos_embed = get_2d_sincos_pos_embed(
-            self.pos_embed.shape[-1], int(self.patch_embed.num_patches**0.5), cls_token=True
-        )
+        pos_embed = get_2d_sincos_pos_embed(self.pos_embed.shape[-1], int(self.patch_embed.num_patches**0.5), cls_token=True)
         self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
 
         # initialize patch_embed like nn.Linear (instead of nn.Conv2d)
@@ -203,12 +194,11 @@ class VideoUnetr(nn.Module):
         latents3 = self.latent_reshape(latents_out[self.skip_encoder_ids[2]])  # [N, D, H//p, W//p]
         s3 = self.skip3(latents3)  # [N, skip_chans[2], H//8, W//8]
 
-        # bottleneck block
+        # the last feature output from ViT encoder
         x = self.latent_reshape(x)  # [N, D, H//p, W//p]
-        x = self.bottem_up(x)  # [N, skip_chans[2], H//8, W//8]
-        x = self.bottem_res_block(torch.cat([x, s3], dim=1))  # [N, skip_chans[2], H//8, W//8]
 
         # upsampling blocks
+        x = self.bottem_up(x, s3)  # [N, skip_chans[2], H//8, W//8]
         x = self.up3(x, s2)  # [N, skip_chans[1], H//4, W//4]
         x = self.up2(x, s1)  # [N, skip_chans[0], H//2, W//2]
         x = self.up1(x)  # [N, skip_chans[0]//2, H, W]
@@ -276,8 +266,7 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
 """ Blocks for skip connections & upsampling """
 
 
-# single convolutional block with GroupNorm and GELU activation
-# yellow block in the UNETR paper architecture diagram with some modification (BatchNorm -> GropNorm, ReLU -> GELU)
+# single convolutional block with GroupNorm and GELU activation (single yellow block in the architecture diagram)
 class BasicBlock(nn.Module):
     def __init__(self, in_channels, out_channels, groups=8, dropout_rate=0.1):
         super().__init__()
@@ -299,17 +288,9 @@ class BasicBlock(nn.Module):
 class ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
-
-        """ convolutional layers """
         self.block1 = BasicBlock(in_channels, out_channels)
         self.block2 = BasicBlock(out_channels, out_channels)
-
-        """ identity mapping """
-        self.res = (
-            nn.Conv2d(in_channels, out_channels, kernel_size=1, padding=0)
-            if in_channels != out_channels
-            else nn.Identity()
-        )
+        self.res = nn.Conv2d(in_channels, out_channels, kernel_size=1, padding=0) if in_channels != out_channels else nn.Identity()
 
     def forward(self, x):
         out = self.block1(x)
@@ -318,7 +299,7 @@ class ResidualBlock(nn.Module):
         return out
 
 
-# skip connection block (transpose convolution followed by a BasicBlock)
+# skip connection block (transpose convolution followed by a BasicBlock. blue block in the architecture diagram)
 class SkipBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
@@ -331,12 +312,12 @@ class SkipBlock(nn.Module):
         return x
 
 
-# upsampling block
+# upsampling block (green block followed by concatenation and 2 yellow blocks in the architecture diagram)
 class UpsampleBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
-        self.upsample = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=4, stride=2, padding=1)
-        self.res_block = ResidualBlock(in_channels, out_channels)
+        self.upsample = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=4, stride=2, padding=1)
+        self.res_block = ResidualBlock(out_channels * 2, out_channels)
 
     def forward(self, x, skip):
         x = self.upsample(x)
