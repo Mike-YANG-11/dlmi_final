@@ -2,6 +2,8 @@
 
 import cv2
 
+import math
+
 import numpy as np
 
 import torch
@@ -26,7 +28,7 @@ class SegFocalLoss(nn.Module):
         p_t = preds * targets + (1 - preds) * (1 - targets)
         focal_loss = ((1 - p_t) ** self.gamma) * bce_loss
 
-        if self.alpha >= 0:
+        if self.alpha > 0:
             alpha_factor = self.alpha * targets + (1 - self.alpha) * (1 - targets)
             focal_loss = alpha_factor * focal_loss
 
@@ -114,187 +116,282 @@ class SegHDTLoss(nn.Module):
             return hd_loss
 
 
-# IoU Calculation for Object Detection
-def calc_iou(a, b):
-    area = (b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1])
+# Loss for Object Detection
+# https://github.com/yhenon/pytorch-retinanet/blob/master/retinanet/losses.py
+class DetLoss(nn.Module):
+    def __init__(self, alpha=0.25, gamma=2.0, siou_loss=None):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.siou_loss = siou_loss
 
-    iw = torch.min(torch.unsqueeze(a[:, 2], dim=1), b[:, 2]) - torch.max(torch.unsqueeze(a[:, 0], 1), b[:, 0])
-    ih = torch.min(torch.unsqueeze(a[:, 3], dim=1), b[:, 3]) - torch.max(torch.unsqueeze(a[:, 1], 1), b[:, 1])
+    def coordinates_transform(self, anchors_pos):
+        """
+        Convert the left-top and right-bottom coordinates of the anchors to center, width, height, length, and angle.
+        Args:
+            anchors_pos (torch.Tensor): The anchor left-top and right-bottom coordinates. Shape (num_total_anchors, 4).
+        Returns:
+            ctr_x, ctr_y, width, height, length, angle (torch.Tensor): The center, width, height, length, and angle of the anchors. each with shape (num_total_anchors,).
+        """
+        x1, y1 = anchors_pos[:, 0], anchors_pos[:, 1]
+        x2, y2 = anchors_pos[:, 2], anchors_pos[:, 3]
 
-    iw = torch.clamp(iw, min=0)
-    ih = torch.clamp(ih, min=0)
+        # center points
+        anchors_ctr_x = (x1 + x2) / 2
+        anchors_ctr_y = (y1 + y2) / 2
 
-    ua = torch.unsqueeze((a[:, 2] - a[:, 0]) * (a[:, 3] - a[:, 1]), dim=1) + area - iw * ih
+        # width, height
+        anchors_width = x2 - x1
+        anchors_height = y2 - y1
 
-    ua = torch.clamp(ua, min=1e-8)
+        # length
+        anchors_length = torch.sqrt(torch.pow(x2 - x1, 2) + torch.pow(y2 - y1, 2))
 
-    intersection = iw * ih
+        # angle
+        anchors_theta = torch.where(x1 == x2, torch.sign(y2 - y1) * math.pi / 2, torch.atan((y2 - y1) / (x2 - x1)))
 
-    IoU = intersection / ua
+        return anchors_ctr_x, anchors_ctr_y, anchors_width, anchors_height, anchors_length, anchors_theta
 
-    return IoU
+    def calc_iou(anchors_pos, cal_annotations):
+        """
+        Calculate the Intersection over Union (IoU) of anchors with center, angle, length annotations.
+        Args:
+            anchors_pos (torch.Tensor): The anchor left-top and right-bottom coordinates. Shape (num_total_anchors, 4).
+            cal_annotations (torch.Tensor): The annotations with (center_x, center_y, angle, length). Shape (num_annotations, 4).
 
+        Returns:
+            IoU (torch.Tensor): The IoU of each anchor with all annotations. Shape (num_anchors, num_annotations).
+        """
+        # convert the center, angle, length annotations to left-top and right-bottom coordinates
+        # Extract components
+        centers = cal_annotations[:, :2]  # shape (num_annotations, 2)
+        angles_radians = cal_annotations[:, 2]  # shape (num_annotations,)
+        lengths = cal_annotations[:, 3]  # shape (num_annotations,)
 
-# Focal Loss for Object Detection
-class DetFocalLoss(nn.Module):
-    # def __init__(self):
+        # Calculate half-length offsets
+        dx = torch.abs(0.5 * lengths * torch.cos(angles_radians))  # shape (num_annotations,)
+        dy = torch.abs(0.5 * lengths * torch.sin(angles_radians))  # shape (num_annotations,)
 
-    def forward(self, classifications, regressions, anchors, annotations):
-        alpha = 0.25
-        gamma = 2.0
+        # Calculate the endpoints
+        dx = dx.unsqueeze(1)  # reshape for broadcasting, shape (num_annotations, 1)
+        dy = dy.unsqueeze(1)  # reshape for broadcasting, shape (num_annotations, 1)
+
+        left_top_points = centers - torch.cat((dx, dy), dim=1)  # shape (num_annotations, 2)
+        right_bottom_points = centers + torch.cat((dx, dy), dim=1)  # shape (num_annotations, 2)
+
+        # Combine endpoints into one tensor with top-left and bottom-right points
+        bbox_annotations = torch.cat((left_top_points, right_bottom_points), dim=1)  # shape (num_annotations, 4)
+
+        # calculate the area of annotation boxes
+        area = (bbox_annotations[:, 2] - bbox_annotations[:, 0]) * (bbox_annotations[:, 3] - bbox_annotations[:, 1])
+
+        # calculate the intersection width of each anchors with all annotations
+        iw = torch.min(torch.unsqueeze(anchors_pos[:, 2], dim=1), bbox_annotations[:, 2]) - torch.max(
+            torch.unsqueeze(anchors_pos[:, 0], 1), bbox_annotations[:, 0]
+        )  # shape (num_anchors, num_annotations)
+
+        # calculate the intersection height of each anchors with all annotations
+        ih = torch.min(torch.unsqueeze(anchors_pos[:, 3], dim=1), bbox_annotations[:, 3]) - torch.max(
+            torch.unsqueeze(anchors_pos[:, 1], 1), bbox_annotations[:, 1]
+        )  # shape (num_anchors, num_annotations)
+
+        # clamp the negative values to 0
+        iw = torch.clamp(iw, min=0)
+        ih = torch.clamp(ih, min=0)
+
+        # calculate the union area of each anchors with all annotations
+        ua = (
+            torch.unsqueeze((anchors_pos[:, 2] - anchors_pos[:, 0]) * (anchors_pos[:, 3] - anchors_pos[:, 1]), dim=1) + area - iw * ih
+        )  # shape (num_anchors, num_annotations)
+        ua = torch.clamp(ua, min=1e-8)
+
+        intersection = iw * ih
+
+        IoU = intersection / ua
+
+        return IoU
+
+    def forward(self, classifications, regressions, anchors_pos, annotations):
+        """
+        Calculate the classification and SIoU regression loss for the object detection task.
+        Args:
+            classifications (torch.Tensor): The predicted class labels for each anchor. Shape (batch_size, num_total_anchors, num_classes).
+            regressions (torch.Tensor): The predicted shifts of center, angle, length for each anchor. Shape (batch_size, num_total_anchors, 4).
+            anchors_pos (torch.Tensor): The anchor left-top and right-bottom coordinates. Shape (num_total_anchors, 4).
+            annotations (torch.Tensor): The annotations with center, angle, length, and class labels. Shape (batch_size, num_annotations, 5).
+        Returns:
+            total_loss (torch.Tensor): The mean detection loss of the current batch.
+        """
         batch_size = classifications.shape[0]
+
+        # list to store the classification and regression losses
         classification_losses = []
         regression_losses = []
 
-        anchor = anchors[0, :, :]  # with shape (number of total anchors, 4)
+        # convert left-top & right-bottom coordinates to center, width, height, length, and angle
+        anchors_ctr_x, anchors_ctr_y, anchors_width, anchors_height, anchors_length, anchors_theta = self.coordinates_transform(anchors_pos)
 
-        anchor_widths = anchor[:, 2] - anchor[:, 0]
-        anchor_heights = anchor[:, 3] - anchor[:, 1]
-        anchor_ctr_x = anchor[:, 0] + 0.5 * anchor_widths
-        anchor_ctr_y = anchor[:, 1] + 0.5 * anchor_heights
+        for idx in range(batch_size):
+            classification = classifications[idx, :, :]  # shape (num_total_anchors, num_classes)
+            regression = regressions[idx, :, :]  # shape (num_total_anchors, 4)
+            annotation = annotations[idx, :, :]  # shape (num_annotations, 5)
 
-        for j in range(batch_size):
+            # remove the annotations with cls_id = -1
+            annotation = annotation[annotation[:, 4] != -1]  ## label -1 as background class
 
-            classification = classifications[j, :, :]
-            regression = regressions[j, :, :]
-
-            bbox_annotation = annotations[j, :, :]
-            # boxes[idx, 0] = x1
-            # boxes[idx, 1] = y1
-            # boxes[idx, 2] = x2
-            # boxes[idx, 3] = y2
-            # boxes[idx, 4] = cls_id
-            bbox_annotation = bbox_annotation[bbox_annotation[:, 4] != -1]  # remove the bbox with class_id = -1
-
+            # clamp the classification values to avoid log(0)
             classification = torch.clamp(classification, 1e-4, 1.0 - 1e-4)
 
-            if bbox_annotation.shape[0] == 0:  # no annotations for this image
-                if torch.cuda.is_available():
-                    alpha_factor = torch.ones(classification.shape).cuda() * alpha
+            """ no annotations for this image"""
 
-                    alpha_factor = 1.0 - alpha_factor
-                    focal_weight = classification
-                    focal_weight = alpha_factor * torch.pow(focal_weight, gamma)
+            if annotation.shape[0] == 0:
+                # compute the focal loss for classification
+                # all the samples are negative
+                bce_loss = -(torch.log(1.0 - classification))
+                focal_loss = (classification**self.gamma) * bce_loss
 
-                    bce = -(torch.log(1.0 - classification))
+                if self.alpha > 0:
+                    alpha_factor = 1.0 - torch.ones(classification.shape).cuda() * self.alpha
+                    focal_loss = alpha_factor * focal_loss
 
-                    # cls_loss = focal_weight * torch.pow(bce, gamma)
-                    cls_loss = focal_weight * bce
-                    classification_losses.append(cls_loss.sum())
-                    regression_losses.append(torch.tensor(0).float().cuda())
-
-                else:
-                    alpha_factor = torch.ones(classification.shape) * alpha
-
-                    alpha_factor = 1.0 - alpha_factor
-                    focal_weight = classification
-                    focal_weight = alpha_factor * torch.pow(focal_weight, gamma)
-
-                    bce = -(torch.log(1.0 - classification))
-
-                    # cls_loss = focal_weight * torch.pow(bce, gamma)
-                    cls_loss = focal_weight * bce
-                    classification_losses.append(cls_loss.sum())
-                    regression_losses.append(torch.tensor(0).float())
+                classification_losses.append(focal_loss.sum())
+                regression_losses.append(torch.tensor(0).float().cuda())  # no regression loss
 
                 continue
 
-            IoU = calc_iou(anchors[0, :, :], bbox_annotation[:, :4])  # num_anchors x num_annotations
+            """ compute the loss for classification """
 
-            IoU_max, IoU_argmax = torch.max(IoU, dim=1)  # num_anchors x 1
+            # assign class labels to the anchors
+            # calculate the IoU between each anchor-annotation pair
+            IoU = self.calc_iou(anchors_pos, annotation[:, :4])  # shape (num_total_anchors, num_annotations)
 
-            # import pdb
-            # pdb.set_trace()
+            IoU_max, IoU_argmax = torch.max(IoU, dim=1)  # shape (num_total_anchors,) both
 
-            # compute the loss for classification
-            targets = torch.ones(classification.shape) * -1
+            # IoU < 0.4 are negative samples (0). IoU > 0.5 are positive samples (1). IoU in [0.4, 0.5) are ignored samples (-1)
+            targets = torch.ones(classification.shape).cuda() * -1  # all the samples are initialized as ignored samples (cls_id = -1)
 
-            if torch.cuda.is_available():
-                targets = targets.cuda()
-
+            # assign negative samples (all cls_id = 0)
             targets[torch.lt(IoU_max, 0.4), :] = 0
 
+            # assign positive anchor indices
             positive_indices = torch.ge(IoU_max, 0.5)
 
-            num_positive_anchors = positive_indices.sum()
+            # assign each anchor its corresponding annotation box with which has the highest IoU
+            assigned_annotations = annotation[IoU_argmax, :]  # shape (num_total_anchors, 5)
 
-            assigned_annotations = bbox_annotation[IoU_argmax, :]
-
+            # assign the targets with the one-hot encoding of the class labels
             targets[positive_indices, :] = 0
             targets[positive_indices, assigned_annotations[positive_indices, 4].long()] = 1
 
-            if torch.cuda.is_available():
-                alpha_factor = torch.ones(targets.shape).cuda() * alpha
-            else:
-                alpha_factor = torch.ones(targets.shape) * alpha
+            # assign the annotations with maximum IoU less than 0.5 to the anchors has the maximum IoU with them
+            for annotation_idx in range(annotation.shape[0]):
+                if torch.max(IoU[:, annotation_idx]) < 0.5:
+                    assign_idx = torch.argmax(IoU[:, annotation_idx])
+                    targets[assign_idx, :] = 0
+                    targets[assign_idx, annotation[annotation_idx, 4].long()] = 1
+                    assigned_annotations[assign_idx, :] = annotation[annotation_idx, :]
 
-            alpha_factor = torch.where(torch.eq(targets, 1.0), alpha_factor, 1.0 - alpha_factor)
-            focal_weight = torch.where(torch.eq(targets, 1.0), 1.0 - classification, classification)
-            focal_weight = alpha_factor * torch.pow(focal_weight, gamma)
+            # final positive anchor indices
+            positive_indices = torch.gt(targets.sum(dim=-1), 0)
+            num_positive_anchors = positive_indices.sum()
 
-            bce = -(targets * torch.log(classification) + (1.0 - targets) * torch.log(1.0 - classification))
+            # compute the focal loss for classification
+            bce_loss = -(targets * torch.log(classification) + (1.0 - targets) * torch.log(1.0 - classification))
+            p_t = torch.where(torch.eq(targets, 1.0), classification, 1.0 - classification)
+            focal_loss = ((1 - p_t) ** self.gamma) * bce_loss
 
-            # cls_loss = focal_weight * torch.pow(bce, gamma)
-            cls_loss = focal_weight * bce
+            if self.alpha > 0:
+                alpha_factor = torch.ones(targets.shape).cuda() * self.alpha
+                alpha_factor = torch.where(torch.eq(targets, 1.0), alpha_factor, 1.0 - alpha_factor)
+                focal_loss = alpha_factor * focal_loss
 
-            if torch.cuda.is_available():
-                cls_loss = torch.where(torch.ne(targets, -1.0), cls_loss, torch.zeros(cls_loss.shape).cuda())
-            else:
-                cls_loss = torch.where(torch.ne(targets, -1.0), cls_loss, torch.zeros(cls_loss.shape))
+            # ignore the samples with cls_id = -1
+            focal_loss = torch.where(torch.ne(targets, -1.0), focal_loss, torch.zeros(focal_loss.shape).cuda())
 
-            classification_losses.append(cls_loss.sum() / torch.clamp(num_positive_anchors.float(), min=1.0))
+            # append classification loss to the list
+            classification_losses.append(focal_loss.sum() / torch.clamp(num_positive_anchors.float(), min=1.0))
 
-            # compute the loss for regression
+            """ compute the loss for regression """
 
             if positive_indices.sum() > 0:
                 assigned_annotations = assigned_annotations[positive_indices, :]
 
-                anchor_widths_pi = anchor_widths[positive_indices]
-                anchor_heights_pi = anchor_heights[positive_indices]
-                anchor_ctr_x_pi = anchor_ctr_x[positive_indices]
-                anchor_ctr_y_pi = anchor_ctr_y[positive_indices]
+                # -------------------------------------------------------------------------------
+                # SIoU loss calculation using center, angle, length
+                anchors_ctr_x_posit = anchors_ctr_x[positive_indices]
+                anchors_ctr_y_posit = anchors_ctr_y[positive_indices]
+                anchors_width_posit = anchors_width[positive_indices]
+                anchors_height_posit = anchors_height[positive_indices]
+                anchors_length_posit = anchors_length[positive_indices]
+                anchors_theta_posit = anchors_theta[positive_indices]
 
-                gt_widths = assigned_annotations[:, 2] - assigned_annotations[:, 0]
-                gt_heights = assigned_annotations[:, 3] - assigned_annotations[:, 1]
-                gt_ctr_x = assigned_annotations[:, 0] + 0.5 * gt_widths
-                gt_ctr_y = assigned_annotations[:, 1] + 0.5 * gt_heights
+                # use the predicted shifts to compute the final regression center, angle, length
+                pred_ctr_x = regression[positive_indices, 0] * anchors_width_posit + anchors_ctr_x_posit
+                pred_ctr_y = regression[positive_indices, 1] * anchors_height_posit + anchors_ctr_y_posit
 
-                # clip widths to 1
-                gt_widths = torch.clamp(gt_widths, min=1)
-                gt_heights = torch.clamp(gt_heights, min=1)
+                """ Design the regression for angle and length """
+                # here we use the ground truth angle orientation to determine the reference angle of the assigned anchor
+                pred_theta = regression[positive_indices, 2] + anchors_theta_posit * torch.where(
+                    assigned_annotations[:, 4] == 0, 1, -1
+                )  ## TODO: check this design
 
-                targets_dx = (gt_ctr_x - anchor_ctr_x_pi) / anchor_widths_pi
-                targets_dy = (gt_ctr_y - anchor_ctr_y_pi) / anchor_heights_pi
-                targets_dw = torch.log(gt_widths / anchor_widths_pi)
-                targets_dh = torch.log(gt_heights / anchor_heights_pi)
+                # Although the length regression follows the original design, the training results are not good
+                pred_length = torch.exp(regression[positive_indices, 3]) * anchors_length_posit  ## TODO: check this design
+                """ End of design """
 
-                targets = torch.stack((targets_dx, targets_dy, targets_dw, targets_dh))
-                targets = targets.t()
+                # prediceted center, angle, length after regression
+                pred_cal = torch.cat((pred_ctr_x.unsqueeze(1), pred_ctr_y.unsqueeze(1), pred_theta.unsqueeze(1), pred_length.unsqueeze(1)), dim=1)
 
-                if torch.cuda.is_available():
-                    targets = targets / torch.Tensor([[0.1, 0.1, 0.2, 0.2]]).cuda()
-                else:
-                    targets = targets / torch.Tensor([[0.1, 0.1, 0.2, 0.2]])
+                # calculate the SIoU loss
+                reg_loss = self.siou_loss(pred_cal, assigned_annotations)
+                # -------------------------------------------------------------------------------
 
-                negative_indices = 1 + (~positive_indices)
+                # -------------------------------------------------------------------------------
+                # Following is the original regression loss calculation using bounding box coordinates
 
-                regression_diff = torch.abs(targets - regression[positive_indices, :])
+                # anchors_width_posit = anchors_width[positive_indices]
+                # anchors_height_posit = anchors_height[positive_indices]
+                # anchors_ctr_x_posit = anchors_ctr_x[positive_indices]
+                # anchors_ctr_y_posit = anchors_ctr_y[positive_indices]
 
-                regression_loss = torch.where(
-                    torch.le(regression_diff, 1.0 / 9.0),
-                    0.5 * 9.0 * torch.pow(regression_diff, 2),
-                    regression_diff - 0.5 / 9.0,
-                )
-                regression_losses.append(regression_loss.mean())
+                # gt_widths = assigned_annotations[:, 2] - assigned_annotations[:, 0]
+                # gt_heights = assigned_annotations[:, 3] - assigned_annotations[:, 1]
+                # gt_ctr_x = assigned_annotations[:, 0] + 0.5 * gt_widths
+                # gt_ctr_y = assigned_annotations[:, 1] + 0.5 * gt_heights
+
+                # # clip widths to 1
+                # gt_widths = torch.clamp(gt_widths, min=1)
+                # gt_heights = torch.clamp(gt_heights, min=1)
+
+                # targets_dx = (gt_ctr_x - anchors_ctr_x_posit) / anchors_width_posit
+                # targets_dy = (gt_ctr_y - anchors_ctr_y_posit) / anchors_height_posit
+                # targets_dw = torch.log(gt_widths / anchors_width_posit)
+                # targets_dh = torch.log(gt_heights / anchors_height_posit)
+
+                # targets = torch.stack((targets_dx, targets_dy, targets_dw, targets_dh))
+                # targets = targets.t()
+
+                # if torch.cuda.is_available():
+                #     targets = targets / torch.Tensor([[0.1, 0.1, 0.2, 0.2]]).cuda()
+                # else:
+                #     targets = targets / torch.Tensor([[0.1, 0.1, 0.2, 0.2]])
+
+                # negative_indices = 1 + (~positive_indices)
+
+                # regression_diff = torch.abs(targets - regression[positive_indices, :])
+
+                # regression_loss = torch.where(
+                #     torch.le(regression_diff, 1.0 / 9.0),
+                #     0.5 * 9.0 * torch.pow(regression_diff, 2),
+                #     regression_diff - 0.5 / 9.0,
+                # )
+                # -------------------------------------------------------------------------------
+
+                regression_losses.append(reg_loss.mean())
             else:
-                if torch.cuda.is_available():
-                    regression_losses.append(torch.tensor(0).float().cuda())
-                else:
-                    regression_losses.append(torch.tensor(0).float())
+                regression_losses.append(torch.tensor(0).float().cuda())
 
-        return torch.stack(classification_losses).mean(dim=0, keepdim=True), torch.stack(regression_losses).mean(
-            dim=0, keepdim=True
-        )
+        return torch.stack(classification_losses).mean(dim=0, keepdim=True), torch.stack(regression_losses).mean(dim=0, keepdim=True)
 
 
 ## SIoU + needle cost for Object Detection
@@ -340,9 +437,7 @@ class SIoULoss(nn.Module):
 
         ## get bottom-left corner (x0, y0) and up-right corner (x1, y1)
         ## torch max or min output a tuple of two tensors (value, indice)
-        permute_pred_endpoints = torch.index_select(
-            pred_endpoints, 1, torch.LongTensor([0, 2, 1, 3]).cuda()
-        )  ## (x1, x3, y1, y3)
+        permute_pred_endpoints = torch.index_select(pred_endpoints, 1, torch.LongTensor([0, 2, 1, 3]).cuda())  ## (x1, x3, y1, y3)
         permute_gt_endpoints = torch.index_select(gt_endpoints, 1, torch.LongTensor([0, 2, 1, 3]).cuda())
         b1_x0, b1_y0 = torch.min(permute_pred_endpoints[:, :2], 1)[0], torch.min(permute_pred_endpoints[:, 2:], 1)[0]
         b1_x1, b1_y1 = torch.max(permute_pred_endpoints[:, :2], 1)[0], torch.max(permute_pred_endpoints[:, 2:], 1)[0]
@@ -350,9 +445,7 @@ class SIoULoss(nn.Module):
         b2_x1, b2_y1 = torch.max(permute_gt_endpoints[:, :2], 1)[0], torch.max(permute_gt_endpoints[:, 2:], 1)[0]
 
         # Intersection area
-        inter = (torch.min(b1_x1, b2_x1) - torch.max(b1_x0, b2_x0)).clamp(0) * (
-            torch.min(b1_y1, b2_y1) - torch.max(b1_y0, b2_y0)
-        ).clamp(0)
+        inter = (torch.min(b1_x1, b2_x1) - torch.max(b1_x0, b2_x0)).clamp(0) * (torch.min(b1_y1, b2_y1) - torch.max(b1_y0, b2_y0)).clamp(0)
 
         # Union Area
         w1, h1 = b1_x1 - b1_x0, b1_y1 - b1_y0 + self.eps
@@ -389,9 +482,7 @@ class SIoULoss(nn.Module):
         # print(f"shape {shape_cost}")
 
         ## Needle Angle Cost
-        sin_needle_angle = torch.sin(
-            gt_angles_degrees - pred_angles_degrees
-        )  ## sine should be as close to 0 as possibile
+        sin_needle_angle = torch.sin(gt_angles_degrees - pred_angles_degrees)  ## sine should be as close to 0 as possibile
         needle_angle_cost = torch.pow(sin_needle_angle, 2)  ## fix negative value
         # print(f"needle angle {needle_angle_cost}")
 
