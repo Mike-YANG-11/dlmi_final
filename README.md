@@ -29,6 +29,7 @@ conda env create -f environment.yml
   - The masks are redundant in the current implementation, as only the mask from the last frame are used in the training process.
 - `model.py`
   - Video-UNETR model architecture.
+  - Video-Retina-UNETR model architecture.
   - Currently, the model only supports 3x224x224 input size.
 - `loss.py`
   - Loss functions for the segmentation and line detection tasks.
