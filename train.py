@@ -157,7 +157,7 @@ def train(
             # Calculate total loss
             loss = fl + dl
             if model_name == "Video-Retina-UNETR":  # with the detection head
-                loss = loss + 0.3 * cl + rl  ## TODO: adaptively modify the weight for the detection loss
+                loss = loss + cl + rl  ## TODO: adaptively modify the weight for the detection loss
 
             # Calculate the segmentation Dice score & IoU score
             seg_dscore = seg_dice_score(vis_pred_masks, masks)
