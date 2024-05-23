@@ -54,6 +54,7 @@
     },
     
     "Train":{
+        "retina_head" : true,
         "experiment_id" : 0,
         "visualize" : true,
 
