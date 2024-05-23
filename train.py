@@ -309,6 +309,7 @@ def train(
 def main(config):
     # --------------------------------------------------------------------------
     # Model Type
+    # --------------------------------------------------------------------------
     retina_head = config["Train"]["retina_head"]  # with the detection head or not
     if retina_head:
         model_name = "Video-Retina-UNETR"
