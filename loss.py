@@ -152,7 +152,7 @@ class DetLoss(nn.Module):
 
         return anchors_ctr_x, anchors_ctr_y, anchors_width, anchors_height, anchors_length, anchors_theta
 
-    def calc_iou(anchors_pos, cal_annotations):
+    def calc_iou(self, anchors_pos, cal_annotations):
         """
         Calculate the Intersection over Union (IoU) of anchors with center, angle, length annotations.
         Args:
