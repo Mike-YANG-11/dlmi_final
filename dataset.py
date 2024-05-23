@@ -78,9 +78,9 @@ class CustomDataset(Dataset):
             img.close()
         consec_masks = torch.cat(consec_masks, dim=0)  ## [T, H, W]
 
-        ## BBox and Cls
+        ## Center, Angle, Length (cal) and Cls
         consec_json_name = self.consec_json_names[idx]  # ["a0001.json", "a0002.json", "a0003.json"]
-        consec_bboxes = []
+        consec_cals = []
         consec_endpoints = []
         consec_labels = []
         for f_name in consec_json_name:
@@ -88,7 +88,7 @@ class CustomDataset(Dataset):
                 js = json.load(f)
                 # print(js)
             if len(js["shapes"]) >= 1:  ## annotated with upper needle
-                bbox = [js["shapes"][1]["center"][0], js["shapes"][1]["center"][1], js["shapes"][1]["theta"], js["shapes"][1]["length"]]
+                cal = [js["shapes"][1]["center"][0], js["shapes"][1]["center"][1], js["shapes"][1]["theta"], js["shapes"][1]["length"]]
                 endpoint = [
                     js["shapes"][1]["points"][0][0],
                     js["shapes"][1]["points"][0][1],
@@ -98,7 +98,7 @@ class CustomDataset(Dataset):
                 # print('bbox', bbox, 'end', endpoint)
                 # label = 0  ## TODO: other cls?
             elif len(js["shapes"]) == 1:  ## annotated with needle
-                bbox = [js["shapes"][0]["center"][0], js["shapes"][0]["center"][1], js["shapes"][0]["theta"], js["shapes"][0]["length"]]
+                cal = [js["shapes"][0]["center"][0], js["shapes"][0]["center"][1], js["shapes"][0]["theta"], js["shapes"][0]["length"]]
                 endpoint = [
                     js["shapes"][0]["points"][0][0],
                     js["shapes"][0]["points"][0][1],
@@ -107,15 +107,15 @@ class CustomDataset(Dataset):
                 ]
                 # label = 0
             else:
-                bbox = [0, 0, 0, 0]
+                cal = [0, 0, 0, 0]
                 endpoint = [0, 0, 0, 0]
                 # label = -1
-            consec_bboxes.append(torch.as_tensor(bbox, dtype=torch.float32))
+            consec_cals.append(torch.as_tensor(cal, dtype=torch.float32))
             # consec_endpoints.append(tv_tensors.BoundingBoxes(endpoint, format="XYXY", canvas_size=[1758,1758]) )
             consec_endpoints.append(torch.as_tensor(endpoint, dtype=torch.float32))
             # consec_labels.append(torch.as_tensor(label, dtype=torch.float32))
             f.close()
-        consec_bboxes = torch.stack(consec_bboxes, dim=0)  ## [T, 4]
+        consec_cals = torch.stack(consec_cals, dim=0)  ## [T, 4]
         consec_endpoints = torch.stack(consec_endpoints, dim=0)  ## [T, 4]
         # consec_labels = torch.stack(consec_labels, dim=0).long()  ## [T,]
 
@@ -125,9 +125,7 @@ class CustomDataset(Dataset):
 
         # Apply transform
         if self.transform:
-            consec_images, consec_masks, consec_endpoints, consec_bboxes = self.transform(
-                consec_images, consec_masks, consec_endpoints, consec_bboxes
-            )
+            consec_images, consec_masks, consec_endpoints, consec_cals = self.transform(consec_images, consec_masks, consec_endpoints, consec_cals)
 
         # Assign labels based on the orientation of the needle
         for t in range(consec_endpoints.shape[0]):
@@ -146,7 +144,7 @@ class CustomDataset(Dataset):
         sample = {
             "images": consec_images,
             "masks": consec_masks,
-            "bboxes": consec_bboxes,  ## (x2, y2, angle, length)
+            "cals": consec_cals,  ## center, angle, length (x2, y2, angle, length)
             "endpoints": consec_endpoints,  ## (x1, y1, x3, y3) tensor, not tv_tensors.BoundingBoxes)
             "labels": consec_labels,  ## cls_id = -1: no needle, 0: left-top to right-bottom, 1: right-top to left-bottom
             "img_path": fname_list,  ## (path_t1, path_t2, path_t3)
@@ -173,7 +171,7 @@ class Augmentation(nn.Module):
             new_coords = torch.stack([new_x1, endpoints[:, 1], new_x3, endpoints[:, 3]], dim=1)
         return new_coords
 
-    def __call__(self, images, masks, endpoints, bboxes):  ## endpoints type: tv_tensors.BoundingBoxes
+    def __call__(self, images, masks, endpoints, cals):  ## endpoints type: tv_tensors.BoundingBoxes
 
         endpoints = tv_tensors.BoundingBoxes(endpoints, format="XYXY", canvas_size=[1758, 1758])  ## [T, 4]
 
@@ -229,9 +227,9 @@ class Augmentation(nn.Module):
                 endpoints[r][0], endpoints[r][1], endpoints[r][2], endpoints[r][3] = 0.0, 0.0, 0.0, 0.0
 
         ## update bbox (center x, center y, theta, len)
-        bboxes = get_center_angle_length(endpoints)
+        cals = get_center_angle_length(endpoints)
 
-        return images, masks, endpoints, bboxes
+        return images, masks, endpoints, cals
 
 
 def 按斜率滑動到裁剪範圍內(points, X1, Y1, X2, Y2):  # points「按斜率滑動」到crop範圍內
@@ -281,21 +279,19 @@ def 計算中心點和角度和長度(points):
     y_center = (y1 + y2) / 2
     if x2 == x1:  # 確保不會除以零
         theta = math.pi / 2 if y2 > y1 else -math.pi / 2
-        theta_y = -math.pi / 2 if y2 > y1 else math.pi / 2  # 反轉 Y 軸，符合傳統座標系Y軸朝上
     else:
         theta = math.atan((y2 - y1) / (x2 - x1))
-        theta_y = math.atan((y1 - y2) / (x2 - x1))  # 反轉 Y 軸，符合傳統座標系Y軸朝上
     length = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
     return torch.tensor([x_center, y_center, theta, length])
 
 
 def get_center_angle_length(points):
-    bboxs = torch.zeros_like(points, dtype=torch.float32)  ## set dtype to float to avoid error
+    cals = torch.zeros_like(points, dtype=torch.float32)  ## set dtype to float to avoid error
     x1, y1 = points[:, 0], points[:, 1]
     x2, y2 = points[:, 2], points[:, 3]
-    bboxs[:, 0] = (x1 + x2) / 2  ## center x
-    bboxs[:, 1] = (y1 + y2) / 2  ## center y
+    cals[:, 0] = (x1 + x2) / 2  ## center x
+    cals[:, 1] = (y1 + y2) / 2  ## center y
     # bboxs[:,2] = torch.where(x1 == x2 , torch.sign(y2 - y1) * math.pi / 2, torch.atan2(y2 - y1 , x2 - x1))
-    bboxs[:, 2] = torch.where(x1 == x2, torch.sign(y2 - y1) * math.pi / 2, torch.atan((y2 - y1) / (x2 - x1)))
-    bboxs[:, 3] = torch.sqrt(torch.pow(x2 - x1, 2) + torch.pow(y2 - y1, 2))  ## length
-    return bboxs
+    cals[:, 2] = torch.where(x1 == x2, torch.sign(y2 - y1) * math.pi / 2, torch.atan((y2 - y1) / (x2 - x1)))
+    cals[:, 3] = torch.sqrt(torch.pow(x2 - x1, 2) + torch.pow(y2 - y1, 2))  ## length
+    return cals
