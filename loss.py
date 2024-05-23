@@ -237,7 +237,7 @@ class DetLoss(nn.Module):
             annotation = annotations[idx, :, :]  # shape (num_annotations, 5)
 
             # remove the annotations with cls_id = -1
-            annotation = annotation[annotation[:, 4] != -1]  ## label -1 as background class
+            annotation = annotation[annotation[:, 4] != -1]  # label -1 as background class
 
             # clamp the classification values to avoid log(0)
             classification = torch.clamp(classification, 1e-4, 1.0 - 1e-4)
@@ -401,15 +401,15 @@ class SIoULoss(nn.Module):
         self.eps = 1e-7  ## avoid dividing 0
         self.needle_angle_cost_weight = 2
 
-    def length_angle_to_endpoint_coordinates(self, bboxs):
+    def length_angle_to_endpoint_coordinates(self, cals):
         """Assume input_tensor is of shape (batch_size, 4)
         and each row is [center_x (x2), center_y (y2), angles_radians, length]
         """
 
         # Extract components
-        centers = bboxs[:, :2]  # shape (batch_size, 2)
-        angles_radians = bboxs[:, 2]  # shape (batch_size,)
-        lengths = bboxs[:, 3]  # shape (batch_size,)
+        centers = cals[:, :2]  # shape (batch_size, 2)
+        angles_radians = cals[:, 2]  # shape (batch_size,)
+        lengths = cals[:, 3]  # shape (batch_size,)
 
         # Calculate half-length offsets
         dx = 0.5 * lengths * torch.cos(angles_radians)
