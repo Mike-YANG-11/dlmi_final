@@ -1,6 +1,8 @@
 {
     "Data":{
 
+        "line_width": 20,
+
         "folder_dir" : "C:/Dropbox/家庭資料室",
 
         "Train_folder":{
@@ -38,7 +40,9 @@
             }
         },
 
-        "easy1941" : "Sonosite_20231017_0836_1941frames_abc(易)(validation dataset)"
+        "easy1941" : "Sonosite_20231017_0836_1941frames_abc(易)(validation dataset)",
+
+        "Unlabeled_folder":{}
 
     },
 
@@ -54,13 +58,22 @@
     },
     
     "Train":{
-        "retina_head" : true,
-        "experiment_id" : 0,
+        "retina_head" : false,
+        "experiment_id" : 1,
         "visualize" : true,
 
-        "batch_size" : 8,
+        "batch_size" : 64,
         "epochs" : 20,
         "blr" : 1.0e-4,
-        "accumulation_steps" : 8
+        "accumulation_steps" : 8,
+        "loss" : ""
+    },
+
+    "Semi_Supervise":{
+        "Pseudo_label":{
+            "start_semi_val_thres": null,
+            "pl_thres":1,
+            "pl_root_dir": "./pseudo_label"
+        }
     }
 }

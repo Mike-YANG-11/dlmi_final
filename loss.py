@@ -51,6 +51,59 @@ class SegDiceLoss(nn.Module):
         return 1 - dice_coeff
 
 
+## FTLoss fo Segmentation
+## https://www.kaggle.com/code/bigironsphere/loss-function-library-keras-pytorch?scriptVersionId=68471013&cellId=19
+class SegFocalTverskyLoss(nn.Module):
+    def __init__(self, weight=None, size_average=True):
+        super(SegFocalTverskyLoss, self).__init__()
+
+    def forward(self, inputs, targets, smooth=1, alpha=0.6, beta=0.4, gamma=1):
+        """
+        TL = TP / (TP + alpha* FN + beta* FP)
+        Set α > β to reduce false positive;  (maybe for Semi Sup?)
+        set β > α will to reduce false negatives
+        """   
+        
+        #flatten label and prediction tensors
+        inputs = inputs.reshape(-1)
+        targets = targets.reshape(-1)
+        
+        #True Positives, False Positives & False Negatives
+        TP = (inputs * targets).sum()    
+        FP = ((1-targets) * inputs).sum()
+        FN = (targets * (1-inputs)).sum()
+        
+        Tversky = (TP + smooth) / (TP + alpha*FP + beta*FN + smooth)  
+        FocalTversky = (1 - Tversky)**gamma
+                       
+        return FocalTversky
+
+
+## Combo Loss fo Segmentation
+## https://www.kaggle.com/code/bigironsphere/loss-function-library-keras-pytorch?scriptVersionId=68471013&cellId=27
+class SegComboLoss(nn.Module):
+    def __init__(self, weight=None, size_average=True, alpha=0.5, ce_ratio=0.5):
+        super(SegComboLoss, self).__init__()
+        self.alpha = alpha          # < 0.5 penalises FP more, > 0.5 penalises FN more
+        self.ce_ratio = ce_ratio    # weighted contribution of modified CE loss compared to Dice loss
+
+    def forward(self, inputs, targets, smooth=1, eps=1e-9):
+        
+        #flatten label and prediction tensors
+        inputs = inputs.reshape(-1)
+        targets = targets.reshape(-1)
+        
+        #True Positives, False Positives & False Negatives
+        intersection = (inputs * targets).sum()    
+        dice = (2. * intersection + smooth) / (inputs.sum() + targets.sum() + smooth)
+        
+        inputs = torch.clamp(inputs, eps, 1.0 - eps)       
+        out = - (self.alpha * ((targets * torch.log(inputs)) + ((1 - self.alpha) * (1.0 - targets) * torch.log(1.0 - inputs))))
+        weighted_ce = out.mean(-1)
+        combo = (self.ce_ratio * weighted_ce) - ((1 - self.ce_ratio) * dice)
+        
+        return combo
+
 # Hausdorff Distance Loss for Segmentation
 class SegHDTLoss(nn.Module):
     """Binary Hausdorff loss based on distance transform"""

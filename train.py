@@ -26,7 +26,7 @@ from dataset import CustomDataset, Augmentation
 from evaluation import evaluate, seg_dice_score, seg_iou_score, results_dictioanry
 from visualization import show_dataset_samples, show_seg_preds_only
 from model import VideoUnetr, VideoRetinaUnetr
-from loss import SegFocalLoss, SegDiceLoss, SIoULoss, DetLoss
+from loss import SegFocalLoss, SegDiceLoss, SIoULoss, DetLoss, SegFocalTverskyLoss, SegComboLoss
 
 
 # Construct the datasets
@@ -34,28 +34,29 @@ def construct_datasets(config):
     image_size = config["Model"]["image_size"]
     batch_size = config["Train"]["batch_size"]
     t = config["Model"]["time_window"]
+    line_width = config["Data"]["line_width"]
 
     train_transform = Augmentation(resized_crop=True, color_jitter=True, horizontal_flip=True, image_size=image_size)
     valid_transform = Augmentation(resized_crop=False, color_jitter=False, horizontal_flip=False, image_size=image_size)
 
     train_dataset_list = []
     for folder_name in config["Data"]["Train_folder"].values():
-        subdataset = CustomDataset(os.path.join(config["Data"]["folder_dir"], folder_name), transform=train_transform, time_window=t)
+        subdataset = CustomDataset(os.path.join(config["Data"]["folder_dir"], folder_name), transform=train_transform, time_window=t, line_width=line_width)
         train_dataset_list.append(subdataset)
 
     valid_dataset_list = []
     for folder_name in config["Data"]["Val_folder"].values():
-        subdataset = CustomDataset(os.path.join(config["Data"]["folder_dir"], folder_name), transform=valid_transform, time_window=t)
+        subdataset = CustomDataset(os.path.join(config["Data"]["folder_dir"], folder_name), transform=valid_transform, time_window=t, line_width=line_width)
         valid_dataset_list.append(subdataset)
 
     test_med_dataset_list = []
     for folder_name in config["Data"]["Test_folder"]["Medium"].values():
-        subdataset = CustomDataset(os.path.join(config["Data"]["folder_dir"], folder_name), transform=valid_transform, time_window=t)
+        subdataset = CustomDataset(os.path.join(config["Data"]["folder_dir"], folder_name), transform=valid_transform, time_window=t, line_width=line_width)
         test_med_dataset_list.append(subdataset)
 
     test_hard_dataset_list = []
     for folder_name in config["Data"]["Test_folder"]["Hard"].values():
-        subdataset = CustomDataset(os.path.join(config["Data"]["folder_dir"], folder_name), transform=valid_transform, time_window=t)
+        subdataset = CustomDataset(os.path.join(config["Data"]["folder_dir"], folder_name), transform=valid_transform, time_window=t, line_width=line_width)
         test_hard_dataset_list.append(subdataset)
 
     """ training dataset """
@@ -93,6 +94,8 @@ def train(
     optimizer,
     seg_focal_loss,
     seg_dice_loss,
+    seg_ft_loss,
+    seg_combo_loss,
     experiment_id,
     model_name,
     logger,
@@ -150,12 +153,14 @@ def train(
             masks = masks[:, -1, :, :].unsqueeze(1)  # [N, 1, H, W]
             fl = seg_focal_loss(vis_pred_masks, masks)
             dl = seg_dice_loss(vis_pred_masks, masks)
+            # ftl = seg_ft_loss(vis_pred_masks, masks)
+            # cbl = seg_combo_loss(vis_pred_masks, masks)
             if model_name == "Video-Retina-UNETR":  # with the detection head
                 annotations = annotations[:, -1, :].unsqueeze(1)  # [N, 1, 5]
                 cl, rl = det_loss(classifications, regressions, anchors_pos, annotations)
 
             # Calculate total loss
-            loss = fl + dl
+            loss =   fl +  dl  # ftl
             if model_name == "Video-Retina-UNETR":  # with the detection head
                 loss = loss + cl + rl  ## TODO: adaptively modify the weight for the detection loss
 
@@ -164,7 +169,7 @@ def train(
             seg_iscore = seg_iou_score(vis_pred_masks, masks)
 
             # update running loss & score
-            running_results["Loss"] += fl.item() + dl.item()
+            running_results["Loss"] += fl.item() + dl.item()  #   ftl.item() #
             running_results["Segmentation Focal Loss"] += fl.item()
             running_results["Segmentation Dice Loss"] += dl.item()
             running_results["Segmentation Dice Score"] += seg_dscore.item()
@@ -324,6 +329,7 @@ def main(config):
     random.seed(0)
     torch.manual_seed(0)
     np.random.seed(0)
+    # torch.backends.cudnn.benchmark = True
 
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -422,6 +428,8 @@ def main(config):
     # loss functions
     seg_focal_loss = SegFocalLoss(alpha=0.75, gamma=2).to(device)
     seg_dice_loss = SegDiceLoss().to(device)
+    seg_ft_loss = SegFocalTverskyLoss().to(device)
+    seg_combo_loss = SegComboLoss().to(device)
     if model_name == "Video-Retina-UNETR":
         det_loss = DetLoss(alpha=0.25, gamma=2.0, siou_loss=SIoULoss()).to(device)
     else:
@@ -458,6 +466,7 @@ def main(config):
             "Base Learning Rate": config["Train"]["blr"],
             "Learning Rate Scheduler": "Linear Decay",
             "Optimizer": "AdamW",
+            "Loss Functions": config["Train"]["loss"]
         },
     )
     # --------------------------------------------------------------------------
@@ -482,6 +491,8 @@ def main(config):
         valid_loader=valid_loader,
         seg_focal_loss=seg_focal_loss,
         seg_dice_loss=seg_dice_loss,
+        seg_ft_loss=seg_ft_loss,
+        seg_combo_loss=seg_combo_loss,
         experiment_id=config["Train"]["experiment_id"],
         model_name=model_name,
         logger=logger,
