@@ -131,7 +131,7 @@ class DetLoss(nn.Module):
         Args:
             anchors_pos (torch.Tensor): The anchor left-top and right-bottom coordinates. Shape (num_total_anchors, 4).
         Returns:
-            ctr_x, ctr_y, width, height, length, angle (torch.Tensor): The center, width, height, length, and angle of the anchors. each with shape (num_total_anchors,).
+            ctr_x, ctr_y, width, height, length, angle (torch.Tensor): The center, width, height, length, and angle of the anchors. Each of shape (num_total_anchors,).
         """
         x1, y1 = anchors_pos[:, 0], anchors_pos[:, 1]
         x2, y2 = anchors_pos[:, 2], anchors_pos[:, 3]
@@ -147,7 +147,7 @@ class DetLoss(nn.Module):
         # length
         anchors_length = torch.sqrt(torch.pow(x2 - x1, 2) + torch.pow(y2 - y1, 2))
 
-        # angle
+        # angle (since the original anchor coordinates are left-top and right-bottom, the angle is in the left-top to right-bottom orientation)
         anchors_theta = torch.where(x1 == x2, torch.sign(y2 - y1) * math.pi / 2, torch.atan((y2 - y1) / (x2 - x1)))
 
         return anchors_ctr_x, anchors_ctr_y, anchors_width, anchors_height, anchors_length, anchors_theta
@@ -246,7 +246,7 @@ class DetLoss(nn.Module):
 
             if annotation.shape[0] == 0:
                 # compute the focal loss for classification
-                # all the samples are negative
+                # all the anchors are negative
                 bce_loss = -(torch.log(1.0 - classification))
                 focal_loss = (classification**self.gamma) * bce_loss
 
@@ -261,22 +261,26 @@ class DetLoss(nn.Module):
 
             """ compute the loss for classification """
 
-            # assign class labels to the anchors
             # calculate the IoU between each anchor-annotation pair
             IoU = self.calc_iou(anchors_pos, annotation[:, :4])  # shape (num_total_anchors, num_annotations)
 
             IoU_max, IoU_argmax = torch.max(IoU, dim=1)  # shape (num_total_anchors,) both
 
-            # IoU < 0.4 are negative samples (0). IoU > 0.5 are positive samples (1). IoU in [0.4, 0.5) are ignored samples (-1)
-            targets = torch.ones(classification.shape).cuda() * -1  # all the samples are initialized as ignored samples (cls_id = -1)
+            # assign class labels to the anchors based on the IoU values
+            # max IoU < 0.4 are negative anchors (all cls_id = 0)
+            # max IoU > 0.5 are positive anchors (corresponding cls_id = 1)
+            # max IoU in [0.4, 0.5) are ignored anchors (all cls_id = -1)
 
-            # assign negative samples (all cls_id = 0)
+            # all the anchors are initialized as ignored anchors (all cls_id = -1)
+            targets = torch.ones(classification.shape).cuda() * -1
+
+            # assign negative anchors (all cls_id = 0)
             targets[torch.lt(IoU_max, 0.4), :] = 0
 
             # assign positive anchor indices
             positive_indices = torch.ge(IoU_max, 0.5)
 
-            # assign each anchor its corresponding annotation box with which has the highest IoU
+            # assign each anchor its corresponding annotations (center_x, center_y, angle, length, cls_id) with which has the highest IoU
             assigned_annotations = annotation[IoU_argmax, :]  # shape (num_total_anchors, 5)
 
             # assign the targets with the one-hot encoding of the class labels
@@ -285,11 +289,14 @@ class DetLoss(nn.Module):
 
             # assign the annotations with maximum IoU less than 0.5 to the anchors has the maximum IoU with them
             for annotation_idx in range(annotation.shape[0]):
-                if torch.max(IoU[:, annotation_idx]) < 0.5:
-                    assign_idx = torch.argmax(IoU[:, annotation_idx])
-                    targets[assign_idx, :] = 0
-                    targets[assign_idx, annotation[annotation_idx, 4].long()] = 1
-                    assigned_annotations[assign_idx, :] = annotation[annotation_idx, :]
+                if torch.max(IoU[:, annotation_idx]) < 0.5:  # torch.max returns the value only if dim is not specified
+                    assign_anchor_idx = torch.argmax(IoU[:, annotation_idx])
+                    # here we can assign the anchor with the annotation without considering repeated assignments
+                    # since we only have one annotation per image
+                    # if there is more than one annotation per image, we need to modify the code here
+                    targets[assign_anchor_idx, :] = 0
+                    targets[assign_anchor_idx, annotation[annotation_idx, 4].long()] = 1
+                    assigned_annotations[assign_anchor_idx, :] = annotation[annotation_idx, :]
 
             # final positive anchor indices
             positive_indices = torch.gt(targets.sum(dim=-1), 0)
@@ -305,7 +312,7 @@ class DetLoss(nn.Module):
                 alpha_factor = torch.where(torch.eq(targets, 1.0), alpha_factor, 1.0 - alpha_factor)
                 focal_loss = alpha_factor * focal_loss
 
-            # ignore the samples with cls_id = -1
+            # ignore the anchors with all cls_id = -1
             focal_loss = torch.where(torch.ne(targets, -1.0), focal_loss, torch.zeros(focal_loss.shape).cuda())
 
             # append classification loss to the list
@@ -330,10 +337,27 @@ class DetLoss(nn.Module):
                 pred_ctr_y = regression[positive_indices, 1] * anchors_height_posit + anchors_ctr_y_posit
 
                 """ Design the regression for angle and length """
-                # here we use the ground truth angle orientation to determine the reference angle of the assigned anchor
-                pred_theta = regression[positive_indices, 2] + anchors_theta_posit * torch.where(
-                    assigned_annotations[:, 4] == 0, 1, -1
-                )  ## TODO: check this design
+                ## TODO: check the design of the angle regression
+
+                # version 1: the reference angle is the left-top to right-bottom orientation of the anchor
+                pred_theta = regression[positive_indices, 2] + anchors_theta_posit
+
+                # version 2: the reference angle is the horizontal orientation
+                # this design is not good since the reference angle is consistent for all anchors)
+                # pred_theta = regression[positive_indices, 2]
+
+                # version 3: the reference angle is the orientation of the assigned annotation
+                # this angle regression target no longer contatins the information of the direction of the angle
+                # but only determines how sloped the line is (positive for more sloped, negative for less sloped)
+                # anchors_theta_posit = anchors_theta_posit * torch.where(assigned_annotations[:, 4] == 0, 1, -1)
+                # pred_theta = torch.zeros_like(anchors_theta_posit, dtype=torch.float32).cuda()
+                # for pos_idx in range(pred_theta.shape[0]):
+                #     if anchors_theta_posit[pos_idx] > 0:
+                #         # left-top to right-bottom orientation: positive regression results in clockwise rotation
+                #         pred_theta[pos_idx] = anchors_theta_posit[pos_idx] + regression[positive_indices, 2][pos_idx]
+                #     else:
+                #         # right-top to left-bottom orientation: positive regression results in counter-clockwise rotation
+                #         pred_theta[pos_idx] = anchors_theta_posit[pos_idx] - regression[positive_indices, 2][pos_idx]
 
                 # Although the length regression follows the original design, the training results are not good
                 pred_length = torch.exp(regression[positive_indices, 3]) * anchors_length_posit  ## TODO: check this design
