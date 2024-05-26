@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader, ConcatDataset
 
 from tqdm import tqdm
 
-from dataset import CustomDataset, Augmentation
+from dataset import CustomDataset, Augmentation, UnlabeledDataset, PseudoDataset
 from evaluation import evaluate, seg_dice_score, seg_iou_score, results_dictioanry
 from visualization import show_dataset_samples, show_seg_preds_only
 from model import VideoUnetr, VideoRetinaUnetr
@@ -82,13 +82,25 @@ def construct_datasets(config):
 
     return train_loader, valid_loader, medium_test_loader, hard_test_loader
 
+def constuct_unlabeled_datasets(config):
+    image_size = config["Model"]["image_size"]
+    batch_size = config["Train"]["batch_size"]
+    t = config["Model"]["time_window"]
+
+    valid_transform = Augmentation(resized_crop=False, color_jitter=False, horizontal_flip=False, image_size=image_size)
+    unlabel_dir_list = list(config["Data"]["Unlabeled_folder"].values())
+    unlabeled_dataset = UnlabeledDataset(unlabel_dir_list, valid_transform, time_window=t)
+
+    unlabeled_loader = DataLoader(unlabeled_dataset, batch_size=batch_size, shuffle=True, drop_last=False)
+
+    print(f"Number of training samples: {len(unlabeled_dataset)}")
+    return unlabeled_loader
 
 # Training Function
 def train(
+    config,
     model,
     device,
-    epochs,
-    accumulation_steps,
     train_loader,
     valid_loader,
     optimizer,
@@ -96,7 +108,6 @@ def train(
     seg_dice_loss,
     seg_ft_loss,
     seg_combo_loss,
-    experiment_id,
     model_name,
     logger,
     checkpoint_dir,
@@ -104,6 +115,87 @@ def train(
     scheduler=None,
     visualize=True,
 ):
+    def train_one_epoch(model, optimizer, train_loader):
+        for step, samples in enumerate(tqdm(train_loader)):
+            # Image data
+            images = samples["images"].to(device)  # [N, T, H, W]
+
+            # Segmentation ground truth masks
+            masks = samples["masks"].to(device)  # [N, T, H, W]
+
+            # Detection ground truth annotations
+            if model_name == "Video-Retina-UNETR":
+                cals = samples["cals"].to(device)  # [N, T, 4]
+                labels = samples["labels"].to(device)  # [N, T]
+                labels = labels.unsqueeze(-1)  # [N, T, 1]
+                annotations = torch.cat([cals, labels], dim=-1)  # [N, T, 5]
+
+            # Forward pass
+            if model_name == "Video-Retina-UNETR":
+                vis_pred_masks, classifications, regressions = model(images)
+                # [N, 1, H, W], [N, num_total_anchors, num_classes], [N, num_total_anchors, 4]
+            else:
+                vis_pred_masks = model(images)  # [N, 1, H, W]
+
+            # Calculate loss (use the last frame as the target mask)
+            masks = masks[:, -1, :, :].unsqueeze(1)  # [N, 1, H, W]
+            # fl = seg_focal_loss(vis_pred_masks, masks)
+            dl = seg_dice_loss(vis_pred_masks, masks)
+            # ftl = seg_ft_loss(vis_pred_masks, masks)
+            # cbl = seg_combo_loss(vis_pred_masks, masks)
+            if model_name == "Video-Retina-UNETR":  # with the detection head
+                annotations = annotations[:, -1, :].unsqueeze(1)  # [N, 1, 5]
+                cl, rl = det_loss(classifications, regressions, anchors_pos, annotations)
+
+            # Calculate total loss
+            loss =    dl  #  ftl  # fl + cbl#
+            if model_name == "Video-Retina-UNETR":  # with the detection head
+                loss = loss + cl + rl  ## TODO: adaptively modify the weight for the detection loss
+
+            # Calculate the segmentation Dice score & IoU score
+            seg_dscore = seg_dice_score(vis_pred_masks, masks)
+            seg_iscore = seg_iou_score(vis_pred_masks, masks)
+
+            # update running loss & score
+            running_results["Loss"] += dl.item()  #fl.item() + dl.item()  #   
+            running_results["Segmentation Focal Loss"] += 0#fl.item()
+            running_results["Segmentation Dice Loss"] += dl.item()
+            running_results["Segmentation Dice Score"] += seg_dscore.item()
+            running_results["Segmentation IoU Score"] += seg_iscore.item()
+            if model_name == "Video-Retina-UNETR":  # with the detection head
+                running_results["Loss"] += cl.item() + rl.item()
+                running_results["Detection Classification Loss"] += cl.item()
+                running_results["Detection Regression Loss"] += rl.item()
+
+            # Gradient accumulation normalization
+            loss = loss / accumulation_steps
+            loss.backward()
+
+            # Update weights
+            if (step + 1) % accumulation_steps == 0:
+                # Gradient clipping
+                nn.utils.clip_grad_norm_(model.parameters(), max_norm=10, norm_type=2)
+                optimizer.step()
+                optimizer.zero_grad()
+
+    epochs=config["Train"]["epochs"]
+    accumulation_steps=config["Train"]["accumulation_steps"]
+    experiment_id=config["Train"]["experiment_id"]
+
+    ### Pseudo Label Training ==================================================
+    ## if model validation if good enough, then generate pseudo labels at current epoch
+    pl_model_thres = config["Semi_Supervise"]["Pseudo_label"]["model_thres"]
+    ## if mask is confident enough, then add to pseudo dataset
+    pl_mask_thres = config["Semi_Supervise"]["Pseudo_label"]["mask_thres"]
+    
+    train_pl = False  ## train with pseudo label or not
+    train_pl_loader = None
+    if pl_model_thres is not None:
+        pl_dir = os.path.join(config["Semi_Supervise"]["Pseudo_label"]["root_dir"], f"{model_name}_{str(experiment_id)}")
+        if not os.path.exists(pl_dir):
+            os.makedirs(pl_dir)
+    ### ========================================================================
+
     logger.info(f"Model: {model_name}")
     logger.info(f"Experiment ID: {experiment_id}")
 
@@ -128,65 +220,11 @@ def train(
         # Reset running results
         running_results = results_dictioanry(model_name=model_name, type="running_results")
 
-        for step, samples in enumerate(tqdm(train_loader)):
-            # Image data
-            images = samples["images"].to(device)  # [N, T, H, W]
+        train_one_epoch(model, optimizer, train_loader=train_loader)
 
-            # Segmentation ground truth masks
-            masks = samples["masks"].to(device)  # [N, T, H, W]
-
-            # Detection ground truth annotations
-            if model_name == "Video-Retina-UNETR":
-                cals = samples["cals"].to(device)  # [N, T, 4]
-                labels = samples["labels"].to(device)  # [N, T]
-                labels = labels.unsqueeze(-1)  # [N, T, 1]
-                annotations = torch.cat([cals, labels], dim=-1)  # [N, T, 5]
-
-            # Forward pass
-            if model_name == "Video-Retina-UNETR":
-                vis_pred_masks, classifications, regressions = model(images)
-                # [N, 1, H, W], [N, num_total_anchors, num_classes], [N, num_total_anchors, 4]
-            else:
-                vis_pred_masks = model(images)  # [N, 1, H, W]
-
-            # Calculate loss (use the last frame as the target mask)
-            masks = masks[:, -1, :, :].unsqueeze(1)  # [N, 1, H, W]
-            fl = seg_focal_loss(vis_pred_masks, masks)
-            dl = seg_dice_loss(vis_pred_masks, masks)
-            # ftl = seg_ft_loss(vis_pred_masks, masks)
-            # cbl = seg_combo_loss(vis_pred_masks, masks)
-            if model_name == "Video-Retina-UNETR":  # with the detection head
-                annotations = annotations[:, -1, :].unsqueeze(1)  # [N, 1, 5]
-                cl, rl = det_loss(classifications, regressions, anchors_pos, annotations)
-
-            # Calculate total loss
-            loss =   fl +  dl  # ftl
-            if model_name == "Video-Retina-UNETR":  # with the detection head
-                loss = loss + cl + rl  ## TODO: adaptively modify the weight for the detection loss
-
-            # Calculate the segmentation Dice score & IoU score
-            seg_dscore = seg_dice_score(vis_pred_masks, masks)
-            seg_iscore = seg_iou_score(vis_pred_masks, masks)
-
-            # update running loss & score
-            running_results["Loss"] += fl.item() + dl.item()  #   ftl.item() #
-            running_results["Segmentation Focal Loss"] += fl.item()
-            running_results["Segmentation Dice Loss"] += dl.item()
-            running_results["Segmentation Dice Score"] += seg_dscore.item()
-            running_results["Segmentation IoU Score"] += seg_iscore.item()
-            if model_name == "Video-Retina-UNETR":  # with the detection head
-                running_results["Loss"] += cl.item() + rl.item()
-                running_results["Detection Classification Loss"] += cl.item()
-                running_results["Detection Regression Loss"] += rl.item()
-
-            # Gradient accumulation normalization
-            loss = loss / accumulation_steps
-            loss.backward()
-
-            # Update weights
-            if (step + 1) % accumulation_steps == 0:
-                optimizer.step()
-                optimizer.zero_grad()
+        ## Semi Supervise: Train with Pseudo Label
+        if train_pl:
+            train_one_epoch(model, optimizer, train_loader=train_pl_loader)
 
         if scheduler is not None:
             # Adjust learning rate
@@ -276,6 +314,14 @@ def train(
             if early_stop_count == 5:
                 print("Early stopping...")
                 break
+        
+        ## Semi Supervise: Pseudo labeling
+        if (pl_model_thres is not None
+            and val_results["Segmentation Dice Loss"] < pl_model_thres ):
+            ## Predict on unlabedDataset to get pseudo labels
+            ## Save csv with img, label path and confidence
+            ## Rest pseudoDataset and loader
+            pass
 
         print(f"Best Validation Loss: {best_val_results['Loss']:.6f}")
         print("--------------------------------------------------")
@@ -482,10 +528,9 @@ def main(config):
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     train(
+        config=config,
         model=model,
         device=device,
-        epochs=config["Train"]["epochs"],
-        accumulation_steps=config["Train"]["accumulation_steps"],
         optimizer=optimizer,
         train_loader=train_loader,
         valid_loader=valid_loader,
@@ -493,7 +538,6 @@ def main(config):
         seg_dice_loss=seg_dice_loss,
         seg_ft_loss=seg_ft_loss,
         seg_combo_loss=seg_combo_loss,
-        experiment_id=config["Train"]["experiment_id"],
         model_name=model_name,
         logger=logger,
         checkpoint_dir=checkpoint_dir,

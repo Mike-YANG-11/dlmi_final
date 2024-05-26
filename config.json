@@ -66,14 +66,14 @@
         "epochs" : 20,
         "blr" : 1.0e-4,
         "accumulation_steps" : 8,
-        "loss" : ""
+        "loss" : "dice"
     },
 
     "Semi_Supervise":{
         "Pseudo_label":{
-            "start_semi_val_thres": null,
-            "pl_thres":1,
-            "pl_root_dir": "./pseudo_label"
+            "model_thres": null,
+            "mask_thres":1,
+            "root_dir": "./pseudo_label"
         }
     }
 }

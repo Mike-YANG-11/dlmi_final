@@ -18,6 +18,7 @@ from torchvision.transforms import v2
 from torchvision import tv_tensors
 
 import pandas as pd
+# from functools import lru_cache
 
 # Custom Dataset Class
 class CustomDataset(Dataset):
@@ -63,7 +64,8 @@ class CustomDataset(Dataset):
 
     def __len__(self):
         return len(self.consec_images_names)
-
+    
+    # @lru_cache(256)
     def __getitem__(self, idx):
         consec_images_name = self.consec_images_names[idx]  # ["a0001.jpg", "a0002.jpg", "a0003.jpg"]
         consec_images = []
@@ -363,41 +365,29 @@ class PseudoDataset(Dataset):
             img.close()
         consec_masks = torch.cat(consec_masks, dim=0)  ## [T, H, W]
 
-        ## TODO: read json simpler
+        ## TODO: pseudo label only train on seg branch?
         ## Center, Angle, Length (cal) and Cls
         consec_json_name = self.consec_json_names[idx]  # ["m0001_pl.json", "m0002_pl.json", "m0003_pl.json"]
         consec_cals = []
         consec_endpoints = []
         consec_labels = []
         for f_name in consec_json_name:
-            with open(os.path.join(self.dir_path, f_name), "r") as f:
+            with open(os.path.join(self.pl_dir, f_name), "r") as f:
                 js = json.load(f)
                 # print(js)
-            if len(js["shapes"]) >= 1:  ## annotated with upper needle
-                cal = [js["shapes"][1]["center"][0], js["shapes"][1]["center"][1], js["shapes"][1]["theta"], js["shapes"][1]["length"]]
+            if "shapes" in js and len(js["shapes"]) >= 0:
+                cal = [js["shapes"]["center"][0], js["shapes"]["center"][1], js["shapes"]["theta"], js["shapes"]["length"]]
                 endpoint = [
-                    js["shapes"][1]["points"][0][0],
-                    js["shapes"][1]["points"][0][1],
-                    js["shapes"][1]["points"][1][0],
-                    js["shapes"][1]["points"][1][1],
+                    js["shapes"]["points"][0][0],
+                    js["shapes"]["points"][0][1],
+                    js["shapes"]["points"][1][0],
+                    js["shapes"]["points"][1][1],
                 ]
-                # print('bbox', bbox, 'end', endpoint)
-                # label = 0  ## TODO: other cls?
-            elif len(js["shapes"]) == 1:  ## annotated with needle
-                cal = [js["shapes"][0]["center"][0], js["shapes"][0]["center"][1], js["shapes"][0]["theta"], js["shapes"][0]["length"]]
-                endpoint = [
-                    js["shapes"][0]["points"][0][0],
-                    js["shapes"][0]["points"][0][1],
-                    js["shapes"][0]["points"][1][0],
-                    js["shapes"][0]["points"][1][1],
-                ]
-                # label = 0
             else:
                 cal = [0, 0, 0, 0]
                 endpoint = [0, 0, 0, 0]
                 # label = -1
             consec_cals.append(torch.as_tensor(cal, dtype=torch.float32))
-            # consec_endpoints.append(tv_tensors.BoundingBoxes(endpoint, format="XYXY", canvas_size=[1758,1758]) )
             consec_endpoints.append(torch.as_tensor(endpoint, dtype=torch.float32))
             # consec_labels.append(torch.as_tensor(label, dtype=torch.float32))
             f.close()

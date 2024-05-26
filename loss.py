@@ -57,7 +57,7 @@ class SegFocalTverskyLoss(nn.Module):
     def __init__(self, weight=None, size_average=True):
         super(SegFocalTverskyLoss, self).__init__()
 
-    def forward(self, inputs, targets, smooth=1, alpha=0.6, beta=0.4, gamma=1):
+    def forward(self, inputs, targets, smooth=1, alpha=0.4, beta=0.6, gamma=1):
         """
         TL = TP / (TP + alpha* FN + beta* FP)
         Set α > β to reduce false positive;  (maybe for Semi Sup?)
@@ -78,14 +78,14 @@ class SegFocalTverskyLoss(nn.Module):
                        
         return FocalTversky
 
-
+### Error when evaluate:  Assertion `input_val >= zero && input_val <= one` failed.
 ## Combo Loss fo Segmentation
 ## https://www.kaggle.com/code/bigironsphere/loss-function-library-keras-pytorch?scriptVersionId=68471013&cellId=27
 class SegComboLoss(nn.Module):
-    def __init__(self, weight=None, size_average=True, alpha=0.5, ce_ratio=0.5):
+    def __init__(self, weight=None, size_average=True, alpha=0.5, beta=0.7):
         super(SegComboLoss, self).__init__()
-        self.alpha = alpha          # < 0.5 penalises FP more, > 0.5 penalises FN more
-        self.ce_ratio = ce_ratio    # weighted contribution of modified CE loss compared to Dice loss
+        self.alpha = alpha    # weighted contribution of modified CE loss compared to Dice loss
+        self.beta = beta          # < 0.5 penalises FP more, > 0.5 penalises FN more
 
     def forward(self, inputs, targets, smooth=1, eps=1e-9):
         
@@ -98,9 +98,9 @@ class SegComboLoss(nn.Module):
         dice = (2. * intersection + smooth) / (inputs.sum() + targets.sum() + smooth)
         
         inputs = torch.clamp(inputs, eps, 1.0 - eps)       
-        out = - (self.alpha * ((targets * torch.log(inputs)) + ((1 - self.alpha) * (1.0 - targets) * torch.log(1.0 - inputs))))
+        out = - (self.beta * ((targets * torch.log(inputs)) + ((1 - self.beta) * (1.0 - targets) * torch.log(1.0 - inputs))))
         weighted_ce = out.mean(-1)
-        combo = (self.ce_ratio * weighted_ce) - ((1 - self.ce_ratio) * dice)
+        combo = (self.alpha * weighted_ce) - ((1 - self.alpha) * dice)
         
         return combo
 
