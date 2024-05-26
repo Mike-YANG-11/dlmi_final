@@ -26,7 +26,7 @@ from dataset import CustomDataset, Augmentation, UnlabeledDataset, PseudoDataset
 from evaluation import evaluate, seg_dice_score, seg_iou_score, results_dictioanry
 from visualization import show_dataset_samples, show_seg_preds_only
 from model import VideoUnetr, VideoRetinaUnetr
-from loss import SegFocalLoss, SegDiceLoss, SIoULoss, DetLoss, SegFocalTverskyLoss, SegComboLoss
+from loss import SegFocalLoss, SegDiceLoss, SIoULoss, DetLoss, SegFocalTverskyLoss, SegIoULoss
 
 
 # Construct the datasets
@@ -88,9 +88,13 @@ def constuct_unlabeled_datasets(config):
     t = config["Model"]["time_window"]
 
     valid_transform = Augmentation(resized_crop=False, color_jitter=False, horizontal_flip=False, image_size=image_size)
-    unlabel_dir_list = list(config["Data"]["Unlabeled_folder"].values())
-    unlabeled_dataset = UnlabeledDataset(unlabel_dir_list, valid_transform, time_window=t)
 
+    dataset_list = []
+    for folder_name in config["Data"]["Unlabeled_folder"].values():
+        subdataset = UnlabeledDataset(os.path.join(config["Data"]["folder_dir"], folder_name), transform=valid_transform, time_window=t)
+        dataset_list.append(subdataset)
+    
+    unlabeled_dataset = ConcatDataset(dataset_list)
     unlabeled_loader = DataLoader(unlabeled_dataset, batch_size=batch_size, shuffle=True, drop_last=False)
 
     print(f"Number of training samples: {len(unlabeled_dataset)}")
@@ -107,7 +111,7 @@ def train(
     seg_focal_loss,
     seg_dice_loss,
     seg_ft_loss,
-    seg_combo_loss,
+    seg_iou_loss,
     model_name,
     logger,
     checkpoint_dir,
@@ -142,13 +146,13 @@ def train(
             # fl = seg_focal_loss(vis_pred_masks, masks)
             dl = seg_dice_loss(vis_pred_masks, masks)
             # ftl = seg_ft_loss(vis_pred_masks, masks)
-            # cbl = seg_combo_loss(vis_pred_masks, masks)
+            # il = seg_iou_loss(vis_pred_masks, masks)
             if model_name == "Video-Retina-UNETR":  # with the detection head
                 annotations = annotations[:, -1, :].unsqueeze(1)  # [N, 1, 5]
                 cl, rl = det_loss(classifications, regressions, anchors_pos, annotations)
 
             # Calculate total loss
-            loss =    dl  #  ftl  # fl + cbl#
+            loss =   dl  #  ftl  # fl + il+  
             if model_name == "Video-Retina-UNETR":  # with the detection head
                 loss = loss + cl + rl  ## TODO: adaptively modify the weight for the detection loss
 
@@ -157,7 +161,7 @@ def train(
             seg_iscore = seg_iou_score(vis_pred_masks, masks)
 
             # update running loss & score
-            running_results["Loss"] += dl.item()  #fl.item() + dl.item()  #   
+            running_results["Loss"] += dl.item()  #    #fl.item()  
             running_results["Segmentation Focal Loss"] += 0#fl.item()
             running_results["Segmentation Dice Loss"] += dl.item()
             running_results["Segmentation Dice Score"] += seg_dscore.item()
@@ -178,6 +182,28 @@ def train(
                 optimizer.step()
                 optimizer.zero_grad()
 
+    def visualize_sample(model, loader):
+        with torch.no_grad():
+            for _, vis_samples in enumerate(loader):
+                # Move to device & forward pass
+                vis_images = vis_samples["images"].to(device)
+                vis_masks = vis_samples["masks"]
+
+                # Forward pass
+                if model_name == "Video-Retina-UNETR":
+                    vis_pred_masks, classifications, regressions = model(vis_images)
+                    # [N, 1, H, W], [N, num_total_anchors, num_classes], [N, num_total_anchors, 4]
+                else:
+                    vis_pred_masks = model(vis_images)  # [N, 1, H, W]
+
+                # Detach and move to CPU
+                vis_images = vis_images.detach().cpu()
+                vis_pred_masks = vis_pred_masks.detach().cpu()
+
+                # Visualize the output
+                show_seg_preds_only(consec_images=vis_images, consec_masks=vis_masks, preds=vis_pred_masks)
+                break
+
     epochs=config["Train"]["epochs"]
     accumulation_steps=config["Train"]["accumulation_steps"]
     experiment_id=config["Train"]["experiment_id"]
@@ -192,8 +218,7 @@ def train(
     train_pl_loader = None
     if pl_model_thres is not None:
         pl_dir = os.path.join(config["Semi_Supervise"]["Pseudo_label"]["root_dir"], f"{model_name}_{str(experiment_id)}")
-        if not os.path.exists(pl_dir):
-            os.makedirs(pl_dir)
+        unlabeled_loader=constuct_unlabeled_datasets(config)
     ### ========================================================================
 
     logger.info(f"Model: {model_name}")
@@ -263,52 +288,15 @@ def train(
             print("The best model is saved!")
 
             if visualize:
+                model.eval()
+
                 # Visualize the output on training data (show the first batch)
                 print("Visualizing the output on training data...")
-                model.eval()
-                with torch.no_grad():
-                    for _, vis_samples in enumerate(train_loader):
-                        # Move to device & forward pass
-                        vis_images = vis_samples["images"].to(device)
-                        vis_masks = vis_samples["masks"]
-
-                        # Forward pass
-                        if model_name == "Video-Retina-UNETR":
-                            vis_pred_masks, classifications, regressions = model(vis_images)
-                            # [N, 1, H, W], [N, num_total_anchors, num_classes], [N, num_total_anchors, 4]
-                        else:
-                            vis_pred_masks = model(vis_images)  # [N, 1, H, W]
-
-                        # Detach and move to CPU
-                        vis_images = vis_images.detach().cpu()
-                        vis_pred_masks = vis_pred_masks.detach().cpu()
-
-                        # Visualize the output
-                        show_seg_preds_only(consec_images=vis_images, consec_masks=vis_masks, preds=vis_pred_masks)
-                        break
+                visualize_sample(model, loader=train_loader)
 
                 # Visualize the output on validation data (show the first batch)
                 print("Visualizing the output on validation data...")
-                with torch.no_grad():
-                    for _, vis_samples in enumerate(valid_loader):
-                        # Move to device & forward pass
-                        vis_images = vis_samples["images"].to(device)
-                        vis_masks = vis_samples["masks"]
-
-                        # Forward pass
-                        if model_name == "Video-Retina-UNETR":
-                            vis_pred_masks, classifications, regressions = model(vis_images)
-                            # [N, 1, H, W], [N, num_total_anchors, num_classes], [N, num_total_anchors, 4]
-                        else:
-                            vis_pred_masks = model(vis_images)  # [N, 1, H, W]
-
-                        # Detach and move to CPU
-                        vis_images = vis_images.detach().cpu()
-                        vis_pred_masks = vis_pred_masks.detach().cpu()
-
-                        # Visualize the output
-                        show_seg_preds_only(consec_images=vis_images, consec_masks=vis_masks, preds=vis_pred_masks)
-                        break
+                visualize_sample(model, loader=valid_loader)
         else:
             early_stop_count += 1
             if early_stop_count == 5:
@@ -475,7 +463,7 @@ def main(config):
     seg_focal_loss = SegFocalLoss(alpha=0.75, gamma=2).to(device)
     seg_dice_loss = SegDiceLoss().to(device)
     seg_ft_loss = SegFocalTverskyLoss().to(device)
-    seg_combo_loss = SegComboLoss().to(device)
+    seg_iou_loss = SegIoULoss().to(device)
     if model_name == "Video-Retina-UNETR":
         det_loss = DetLoss(alpha=0.25, gamma=2.0, siou_loss=SIoULoss()).to(device)
     else:
@@ -537,7 +525,7 @@ def main(config):
         seg_focal_loss=seg_focal_loss,
         seg_dice_loss=seg_dice_loss,
         seg_ft_loss=seg_ft_loss,
-        seg_combo_loss=seg_combo_loss,
+        seg_iou_loss=seg_iou_loss,
         model_name=model_name,
         logger=logger,
         checkpoint_dir=checkpoint_dir,

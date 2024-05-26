@@ -22,10 +22,15 @@ class SegFocalLoss(nn.Module):
         # flatten prediction and target tensors
         preds = preds.reshape(-1)  # [N, 1, H, W] -> [N*H*W]
         targets = targets.reshape(-1)  # [N, 1, H, W] -> [N*H*W]
+        if torch.isnan(preds).any() or torch.isinf(preds).any():
+            print(f"\tpred Nan:{torch.isnan(preds).any()} Inf:{torch.isinf(preds).any()}")
 
         # compute binary cross-entropy
         bce_loss = F.binary_cross_entropy(preds, targets, reduction="none")
         p_t = preds * targets + (1 - preds) * (1 - targets)
+        if torch.isnan(p_t).any() or torch.isinf(p_t).any() or torch.isnan(bce_loss).any() or torch.isinf(bce_loss).any():
+            print(f"\tbce Nan:{torch.isnan(bce_loss).any()} Inf:{torch.isinf(bce_loss).any()}")
+            print(f"\tp_t Nan:{torch.isnan(p_t).any()} Inf:{torch.isinf(p_t).any()}")
         focal_loss = ((1 - p_t) ** self.gamma) * bce_loss
 
         if self.alpha > 0:
@@ -78,7 +83,7 @@ class SegFocalTverskyLoss(nn.Module):
                        
         return FocalTversky
 
-### Error when evaluate:  Assertion `input_val >= zero && input_val <= one` failed.
+### Error:  Assertion `input_val >= zero && input_val <= one` failed. (predict Nan when evaluation at epoch 1) 
 ## Combo Loss fo Segmentation
 ## https://www.kaggle.com/code/bigironsphere/loss-function-library-keras-pytorch?scriptVersionId=68471013&cellId=27
 class SegComboLoss(nn.Module):
@@ -103,6 +108,27 @@ class SegComboLoss(nn.Module):
         combo = (self.alpha * weighted_ce) - ((1 - self.alpha) * dice)
         
         return combo
+
+#PyTorch
+class SegIoULoss(nn.Module):
+    def __init__(self, weight=None, size_average=True):
+        super(SegIoULoss, self).__init__()
+
+    def forward(self, inputs, targets, smooth=1):
+       
+        #flatten label and prediction tensors
+        inputs = inputs.reshape(-1)
+        targets = targets.reshape(-1)
+        
+        #intersection is equivalent to True Positive count
+        #union is the mutually inclusive area of all labels & predictions 
+        intersection = (inputs * targets).sum()
+        total = (inputs + targets).sum()
+        union = total - intersection 
+        
+        IoU = (intersection + smooth)/(union + smooth)
+                
+        return 1 - IoU
 
 # Hausdorff Distance Loss for Segmentation
 class SegHDTLoss(nn.Module):
