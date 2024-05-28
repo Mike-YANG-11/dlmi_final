@@ -7,6 +7,7 @@ import os
 import random
 
 import numpy as np
+import pandas as pd
 
 import torch
 import torch.nn as nn
@@ -22,11 +23,12 @@ from torch.utils.data import DataLoader, ConcatDataset
 
 from tqdm import tqdm
 
-from dataset import CustomDataset, Augmentation, UnlabeledDataset, PseudoDataset
+from dataset import CustomDataset, Augmentation, UnlabeledDataset, PseudoDataset, AugmentationImgMaskOnly
 from evaluation import evaluate, seg_dice_score, seg_iou_score, results_dictioanry
 from visualization import show_dataset_samples, show_seg_preds_only
 from model import VideoUnetr, VideoRetinaUnetr
 from loss import SegFocalLoss, SegDiceLoss, SIoULoss, DetLoss, SegFocalTverskyLoss, SegIoULoss
+from pseudolabel import generate_pl
 
 
 # Construct the datasets
@@ -82,7 +84,7 @@ def construct_datasets(config):
 
     return train_loader, valid_loader, medium_test_loader, hard_test_loader
 
-def constuct_unlabeled_datasets(config):
+def construct_unlabeled_datasets(config):
     image_size = config["Model"]["image_size"]
     batch_size = config["Train"]["batch_size"]
     t = config["Model"]["time_window"]
@@ -90,7 +92,7 @@ def constuct_unlabeled_datasets(config):
     valid_transform = Augmentation(resized_crop=False, color_jitter=False, horizontal_flip=False, image_size=image_size)
 
     dataset_list = []
-    for folder_name in config["Data"]["Unlabeled_folder"].values():
+    for folder_name in config["Data"]["Unlabeled_folder"]:
         subdataset = UnlabeledDataset(os.path.join(config["Data"]["folder_dir"], folder_name), transform=valid_transform, time_window=t)
         dataset_list.append(subdataset)
     
@@ -119,7 +121,7 @@ def train(
     scheduler=None,
     visualize=True,
 ):
-    def train_one_epoch(model, optimizer, train_loader):
+    def train_one_epoch(model, optimizer, train_loader, running_results, train_det_head=True, ignore_index=None):
         for step, samples in enumerate(tqdm(train_loader)):
             # Image data
             images = samples["images"].to(device)  # [N, T, H, W]
@@ -128,7 +130,7 @@ def train(
             masks = samples["masks"].to(device)  # [N, T, H, W]
 
             # Detection ground truth annotations
-            if model_name == "Video-Retina-UNETR":
+            if model_name == "Video-Retina-UNETR" and train_det_head:
                 cals = samples["cals"].to(device)  # [N, T, 4]
                 labels = samples["labels"].to(device)  # [N, T]
                 labels = labels.unsqueeze(-1)  # [N, T, 1]
@@ -143,17 +145,17 @@ def train(
 
             # Calculate loss (use the last frame as the target mask)
             masks = masks[:, -1, :, :].unsqueeze(1)  # [N, 1, H, W]
-            # fl = seg_focal_loss(vis_pred_masks, masks)
-            dl = seg_dice_loss(vis_pred_masks, masks)
+            # fl = seg_focal_loss(vis_pred_masks, masks, ignore_index=ignore_index)
+            dl = seg_dice_loss(vis_pred_masks, masks, ignore_index=ignore_index)
             # ftl = seg_ft_loss(vis_pred_masks, masks)
             # il = seg_iou_loss(vis_pred_masks, masks)
-            if model_name == "Video-Retina-UNETR":  # with the detection head
+            if model_name == "Video-Retina-UNETR" and train_det_head:  # with the detection head
                 annotations = annotations[:, -1, :].unsqueeze(1)  # [N, 1, 5]
                 cl, rl = det_loss(classifications, regressions, anchors_pos, annotations)
 
             # Calculate total loss
-            loss =   dl  #  ftl  # fl + il+  
-            if model_name == "Video-Retina-UNETR":  # with the detection head
+            loss =  dl #+  fl #+ il+  fl  #  ftl
+            if model_name == "Video-Retina-UNETR" and train_det_head:  # with the detection head
                 loss = loss + cl + rl  ## TODO: adaptively modify the weight for the detection loss
 
             # Calculate the segmentation Dice score & IoU score
@@ -161,12 +163,12 @@ def train(
             seg_iscore = seg_iou_score(vis_pred_masks, masks)
 
             # update running loss & score
-            running_results["Loss"] += dl.item()  #    #fl.item()  
+            running_results["Loss"] +=  dl.item() #+ fl.item()  
             running_results["Segmentation Focal Loss"] += 0#fl.item()
             running_results["Segmentation Dice Loss"] += dl.item()
             running_results["Segmentation Dice Score"] += seg_dscore.item()
             running_results["Segmentation IoU Score"] += seg_iscore.item()
-            if model_name == "Video-Retina-UNETR":  # with the detection head
+            if model_name == "Video-Retina-UNETR" and train_det_head:  # with the detection head
                 running_results["Loss"] += cl.item() + rl.item()
                 running_results["Detection Classification Loss"] += cl.item()
                 running_results["Detection Regression Loss"] += rl.item()
@@ -181,7 +183,9 @@ def train(
                 nn.utils.clip_grad_norm_(model.parameters(), max_norm=10, norm_type=2)
                 optimizer.step()
                 optimizer.zero_grad()
-
+        
+        return running_results
+    
     def visualize_sample(model, loader):
         with torch.no_grad():
             for _, vis_samples in enumerate(loader):
@@ -211,14 +215,14 @@ def train(
     ### Pseudo Label Training ==================================================
     ## if model validation if good enough, then generate pseudo labels at current epoch
     pl_model_thres = config["Semi_Supervise"]["Pseudo_label"]["model_thres"]
-    ## if mask is confident enough, then add to pseudo dataset
-    pl_mask_thres = config["Semi_Supervise"]["Pseudo_label"]["mask_thres"]
     
     train_pl = False  ## train with pseudo label or not
-    train_pl_loader = None
     if pl_model_thres is not None:
         pl_dir = os.path.join(config["Semi_Supervise"]["Pseudo_label"]["root_dir"], f"{model_name}_{str(experiment_id)}")
-        unlabeled_loader=constuct_unlabeled_datasets(config)
+        unlabeled_loader=construct_unlabeled_datasets(config)
+        df = pd.DataFrame(columns=["img_root", "img_names", "mask_path", "confidence"])
+        train_pl_loader = None
+        running_pl_results = None
     ### ========================================================================
 
     logger.info(f"Model: {model_name}")
@@ -242,14 +246,22 @@ def train(
     for epoch in range(epochs):
         optimizer.zero_grad()
 
+        ## Semi Supervise: Train with Pseudo Label
+        if train_pl:
+            print('Training PL...')
+            ignore = None
+            if config["Semi_Supervise"]["Pseudo_label"]["pl_version"] == 2:
+                ignore = 2
+            running_pl_results = results_dictioanry(model_name="", type="running_results")
+            running_pl_results = train_one_epoch(model, optimizer, 
+                                                 train_loader=train_pl_loader, 
+                                                 running_results=running_pl_results, 
+                                                 train_det_head=False,  ## ## only train seg head
+                                                 ignore_index=ignore)  ## ignore low confidence pixels in v2 when calculating loss
         # Reset running results
         running_results = results_dictioanry(model_name=model_name, type="running_results")
 
-        train_one_epoch(model, optimizer, train_loader=train_loader)
-
-        ## Semi Supervise: Train with Pseudo Label
-        if train_pl:
-            train_one_epoch(model, optimizer, train_loader=train_pl_loader)
+        running_results = train_one_epoch(model, optimizer, train_loader, running_results)
 
         if scheduler is not None:
             # Adjust learning rate
@@ -265,6 +277,8 @@ def train(
         print("--------------------------------------------------")
         print(f"Epoch [{epoch+1}/{epochs}]")
         print(f"Training Loss: {running_results['Loss']/len(train_loader):.6f}")
+        if train_pl:
+            print(f"Training PL Loss: {running_pl_results['Loss']/len(train_pl_loader):.6f}")
         print(f"Validation Loss: {val_results['Loss']:.6f}")
 
         # Save the best model & visualize the output if the model is improved
@@ -305,11 +319,24 @@ def train(
         
         ## Semi Supervise: Pseudo labeling
         if (pl_model_thres is not None
-            and val_results["Segmentation Dice Loss"] < pl_model_thres ):
+            and val_results["Segmentation IoU Score"] > pl_model_thres ):
             ## Predict on unlabedDataset to get pseudo labels
-            ## Save csv with img, label path and confidence
-            ## Rest pseudoDataset and loader
-            pass
+            df = generate_pl(config, model, device, unlabeled_loader, model_name, df, pl_dir)
+            print(df.head())
+            ## Save csv with img folder directory, image names, pl path and confidence
+            df_csv_dir = os.path.join(pl_dir,'pl.csv')
+            df.to_csv(df_csv_dir, index=False)  ## ./pseudo_label/model_1/pl.csv
+            
+            ## Rest pseudo_dataset and loader
+            if train_pl_loader is None:
+                train_transform = AugmentationImgMaskOnly(resized_crop=True, color_jitter=True, horizontal_flip=True, image_size=config["Model"]["image_size"])
+                pseudo_dataset = PseudoDataset(df_csv_dir, transform=train_transform, time_window=config["Model"]["time_window"])
+                train_pl_loader = DataLoader(pseudo_dataset, batch_size=config["Train"]["batch_size"], shuffle=True, drop_last=True)
+            else:
+                train_pl_loader.dataset.update_df_from_csv()
+                print(f"updated pl dataset length:{len(train_pl_loader.dataset)}")  ## check
+
+
 
         print(f"Best Validation Loss: {best_val_results['Loss']:.6f}")
         print("--------------------------------------------------")
@@ -322,6 +349,11 @@ def train(
         for key, value in running_results.items():
             logger.info(f"{key}: {value/len(train_loader):.6f}")
         logger.info("--------------------------------------------------")
+        if train_pl and running_pl_results is not None:
+            logger.info(f"Running PL Results on Pseudo Label Data:")
+            for key, value in running_pl_results.items():
+                logger.info(f"{key}: {value/len(train_pl_loader):.6f}")
+            logger.info("--------------------------------------------------")
         logger.info(f"Validation Results:")
         for key, value in val_results.items():
             logger.info(f"{key}: {value:.6f}")
@@ -335,9 +367,16 @@ def train(
         wandb_results = {}
         for key, value in running_results.items():
             wandb_results[f"Training {key}"] = value / len(train_loader)
+        if train_pl and running_pl_results is not None:
+            for key, value in running_pl_results.items():
+                wandb_results[f"PseudoLabel/Training {key}"] = value / len(train_pl_loader)
         for key, value in val_results.items():
             wandb_results[f"Validation {key}"] = value
         wandb.log(wandb_results)
+
+        ## start to train pseudo labels if there is at least a batch of PL
+        if pl_model_thres is not None and  len(df.index) >= config["Train"]["batch_size"]:
+            train_pl = True
 
         model.train()
 

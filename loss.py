@@ -18,19 +18,19 @@ class SegFocalLoss(nn.Module):
         self.alpha = alpha
         self.gamma = gamma
 
-    def forward(self, preds, targets):
+    def forward(self, preds, targets, ignore_index=None):
         # flatten prediction and target tensors
         preds = preds.reshape(-1)  # [N, 1, H, W] -> [N*H*W]
         targets = targets.reshape(-1)  # [N, 1, H, W] -> [N*H*W]
-        if torch.isnan(preds).any() or torch.isinf(preds).any():
-            print(f"\tpred Nan:{torch.isnan(preds).any()} Inf:{torch.isinf(preds).any()}")
-
+        if ignore_index is not None:
+            # Create a mask where targets are not equal to the ignore_index
+            mask = (targets != ignore_index)
+            # Apply the mask to preds and targets to filter out ignored values
+            preds = preds[mask]
+            targets = targets[mask]
         # compute binary cross-entropy
         bce_loss = F.binary_cross_entropy(preds, targets, reduction="none")
         p_t = preds * targets + (1 - preds) * (1 - targets)
-        if torch.isnan(p_t).any() or torch.isinf(p_t).any() or torch.isnan(bce_loss).any() or torch.isinf(bce_loss).any():
-            print(f"\tbce Nan:{torch.isnan(bce_loss).any()} Inf:{torch.isinf(bce_loss).any()}")
-            print(f"\tp_t Nan:{torch.isnan(p_t).any()} Inf:{torch.isinf(p_t).any()}")
         focal_loss = ((1 - p_t) ** self.gamma) * bce_loss
 
         if self.alpha > 0:
@@ -45,11 +45,17 @@ class SegDiceLoss(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, preds, targets, smooth=1e-6):
+    def forward(self, preds, targets, smooth=1e-6, ignore_index=None):
         # flatten prediction and target tensors
         preds = preds.reshape(-1)  # [N, 1, H, W] -> [N*H*W]
         targets = targets.reshape(-1)  # [N, 1, H, W] -> [N*H*W]
-
+        
+        if ignore_index is not None:
+            # Create a mask where targets are not equal to the ignore_index
+            mask = (targets != ignore_index)
+            # Apply the mask to preds and targets to filter out ignored values
+            preds = preds[mask]
+            targets = targets[mask]
         intersection = (preds * targets).sum()
         dice_coeff = (2.0 * intersection + smooth) / (preds.sum() + targets.sum() + smooth)
 

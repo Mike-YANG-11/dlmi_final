@@ -3,3 +3,4 @@ logs/
 mae_pretrain_vit_base_checkpoints/
 video_unetr_checkpoints/
 wandb/
+pseudo_label/
