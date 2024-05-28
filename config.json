@@ -1,7 +1,7 @@
 {
     "Data":{
 
-        "folder_dir" : "C:/Users/detac/Dropbox/家庭資料室",
+        "folder_dir" : "C:/Dropbox/家庭資料室",
         
         "line_width": 20,
 
@@ -58,12 +58,12 @@
     },
     
     "Train":{
-        "retina_head" : true,
-        "experiment_id" : 6,
-        "visualize" : false,
-        "with_aqe" : true,
+        "retina_head" : false,
+        "experiment_id" : 4,
+        "visualize" : true,
+        "with_aqe" : false,
         "batch_size" : 8,
-        "epochs" : 30,
+        "epochs" : 20,
         "blr" : 1.0e-4,
         "accumulation_steps" : 8,
         "loss" : "dice"
