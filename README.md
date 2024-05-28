@@ -20,6 +20,7 @@ dlmi_final/
 ## Set up
 ```
 conda env create -f environment.yml
+conda activate dlmi_final
 ```
 ## File Functionalities
 - `dataset.py`

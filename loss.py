@@ -18,14 +18,16 @@ class SegFocalLoss(nn.Module):
         self.alpha = alpha
         self.gamma = gamma
 
-    def forward(self, preds, targets):
+    def forward(self, preds, targets, ignore_index=None):
         # flatten prediction and target tensors
         preds = preds.reshape(-1)  # [N, 1, H, W] -> [N*H*W]
         targets = targets.reshape(-1)  # [N, 1, H, W] -> [N*H*W]
-
-        # check if there is any NaN in the predictions
-        preds = torch.where(torch.isnan(preds), torch.zeros_like(preds), preds)
-
+        if ignore_index is not None:
+            # Create a mask where targets are not equal to the ignore_index
+            mask = targets != ignore_index
+            # Apply the mask to preds and targets to filter out ignored values
+            preds = preds[mask]
+            targets = targets[mask]
         # compute binary cross-entropy
         bce_loss = F.binary_cross_entropy(preds, targets, reduction="none")
         p_t = preds * targets + (1 - preds) * (1 - targets)
@@ -43,15 +45,98 @@ class SegDiceLoss(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, preds, targets, smooth=1e-6):
+    def forward(self, preds, targets, smooth=1e-6, ignore_index=None):
         # flatten prediction and target tensors
         preds = preds.reshape(-1)  # [N, 1, H, W] -> [N*H*W]
         targets = targets.reshape(-1)  # [N, 1, H, W] -> [N*H*W]
 
+        if ignore_index is not None:
+            # Create a mask where targets are not equal to the ignore_index
+            mask = targets != ignore_index
+            # Apply the mask to preds and targets to filter out ignored values
+            preds = preds[mask]
+            targets = targets[mask]
         intersection = (preds * targets).sum()
         dice_coeff = (2.0 * intersection + smooth) / (preds.sum() + targets.sum() + smooth)
 
         return 1 - dice_coeff
+
+
+## FTLoss fo Segmentation
+## https://www.kaggle.com/code/bigironsphere/loss-function-library-keras-pytorch?scriptVersionId=68471013&cellId=19
+class SegFocalTverskyLoss(nn.Module):
+    def __init__(self, weight=None, size_average=True):
+        super(SegFocalTverskyLoss, self).__init__()
+
+    def forward(self, inputs, targets, smooth=1, alpha=0.4, beta=0.6, gamma=1):
+        """
+        TL = TP / (TP + alpha* FN + beta* FP)
+        Set α > β to reduce false positive;  (maybe for Semi Sup?)
+        set β > α will to reduce false negatives
+        """
+
+        # flatten label and prediction tensors
+        inputs = inputs.reshape(-1)
+        targets = targets.reshape(-1)
+
+        # True Positives, False Positives & False Negatives
+        TP = (inputs * targets).sum()
+        FP = ((1 - targets) * inputs).sum()
+        FN = (targets * (1 - inputs)).sum()
+
+        Tversky = (TP + smooth) / (TP + alpha * FP + beta * FN + smooth)
+        FocalTversky = (1 - Tversky) ** gamma
+
+        return FocalTversky
+
+
+### Error:  Assertion `input_val >= zero && input_val <= one` failed. (predict Nan when evaluation at epoch 1)
+## Combo Loss fo Segmentation
+## https://www.kaggle.com/code/bigironsphere/loss-function-library-keras-pytorch?scriptVersionId=68471013&cellId=27
+class SegComboLoss(nn.Module):
+    def __init__(self, weight=None, size_average=True, alpha=0.5, beta=0.7):
+        super(SegComboLoss, self).__init__()
+        self.alpha = alpha  # weighted contribution of modified CE loss compared to Dice loss
+        self.beta = beta  # < 0.5 penalises FP more, > 0.5 penalises FN more
+
+    def forward(self, inputs, targets, smooth=1, eps=1e-9):
+
+        # flatten label and prediction tensors
+        inputs = inputs.reshape(-1)
+        targets = targets.reshape(-1)
+
+        # True Positives, False Positives & False Negatives
+        intersection = (inputs * targets).sum()
+        dice = (2.0 * intersection + smooth) / (inputs.sum() + targets.sum() + smooth)
+
+        inputs = torch.clamp(inputs, eps, 1.0 - eps)
+        out = -(self.beta * ((targets * torch.log(inputs)) + ((1 - self.beta) * (1.0 - targets) * torch.log(1.0 - inputs))))
+        weighted_ce = out.mean(-1)
+        combo = (self.alpha * weighted_ce) - ((1 - self.alpha) * dice)
+
+        return combo
+
+
+# PyTorch
+class SegIoULoss(nn.Module):
+    def __init__(self, weight=None, size_average=True):
+        super(SegIoULoss, self).__init__()
+
+    def forward(self, inputs, targets, smooth=1):
+
+        # flatten label and prediction tensors
+        inputs = inputs.reshape(-1)
+        targets = targets.reshape(-1)
+
+        # intersection is equivalent to True Positive count
+        # union is the mutually inclusive area of all labels & predictions
+        intersection = (inputs * targets).sum()
+        total = (inputs + targets).sum()
+        union = total - intersection
+
+        IoU = (intersection + smooth) / (union + smooth)
+
+        return 1 - IoU
 
 
 # Hausdorff Distance Loss for Segmentation
@@ -151,10 +236,7 @@ class DetLoss(nn.Module):
         # length
         anchors_length = torch.sqrt(torch.pow(x2 - x1, 2) + torch.pow(y2 - y1, 2))
 
-        # angle (since the original anchor coordinates are left-top and right-bottom, the angle is in the left-top to right-bottom orientation)
-        anchors_theta = torch.where(x1 == x2, torch.sign(y2 - y1) * math.pi / 2, torch.atan((y2 - y1) / (x2 - x1)))
-
-        return anchors_ctr_x, anchors_ctr_y, anchors_width, anchors_height, anchors_length, anchors_theta
+        return anchors_ctr_x, anchors_ctr_y, anchors_width, anchors_height, anchors_length
 
     def calc_iou(self, anchors_pos, cal_annotations):
         """
@@ -233,7 +315,7 @@ class DetLoss(nn.Module):
         regression_losses = []
 
         # convert left-top & right-bottom coordinates to center, width, height, length, and angle
-        anchors_ctr_x, anchors_ctr_y, anchors_width, anchors_height, anchors_length, anchors_theta = self.coordinates_transform(anchors_pos)
+        anchors_ctr_x, anchors_ctr_y, anchors_width, anchors_height, anchors_length = self.coordinates_transform(anchors_pos)
 
         for idx in range(batch_size):
             classification = classifications[idx, :, :]  # shape (num_total_anchors, num_classes)

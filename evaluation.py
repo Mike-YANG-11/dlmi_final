@@ -121,7 +121,7 @@ def se_metric(coord_p, coord_g, size):
 def len_metric(coord_p, coord_g, size):
     len_p = np.sqrt((coord_p[0] + coord_p[2]) ** 2 + (coord_p[1] + coord_p[3]) ** 2)
     len_g = np.sqrt((coord_g[0] + coord_g[2]) ** 2 + (coord_g[1] + coord_g[3]) ** 2)  ## bbox length for bbox branch, seg length for seg branch?
-    len_bias = abs(len_g - len_p) / max(size[0], size[1])
+    len_bias = abs(len_g - len_p) / np.sqrt(size[0]**2+ size[1]**2)
     return max(0, (1 - len_bias)) ** 2
 
 
