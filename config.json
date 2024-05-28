@@ -1,7 +1,7 @@
 {
     "Data":{
 
-        "folder_dir" : "C:/Dropbox/家庭資料室",
+        "folder_dir" : "C:/Users/detac/Dropbox/家庭資料室",
 
         "Train_folder":{
             "easy2220" : "Sonosite_20231017_0833_2220frames_abc(易)",
@@ -55,11 +55,12 @@
     
     "Train":{
         "retina_head" : true,
-        "experiment_id" : 0,
-        "visualize" : true,
+        "experiment_id" : 6,
+        "visualize" : false,
+        "with_aqe" : true,
 
         "batch_size" : 8,
-        "epochs" : 20,
+        "epochs" : 30,
         "blr" : 1.0e-4,
         "accumulation_steps" : 8
     }

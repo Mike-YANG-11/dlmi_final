@@ -26,7 +26,7 @@ from dataset import CustomDataset, Augmentation
 from evaluation import evaluate, seg_dice_score, seg_iou_score, results_dictioanry
 from visualization import show_dataset_samples, show_seg_preds_only
 from model import VideoUnetr, VideoRetinaUnetr
-from loss import SegFocalLoss, SegDiceLoss, SIoULoss, DetLoss
+from loss import SegFocalLoss, SegDiceLoss, DetLoss, SIoULoss, AQELoss
 
 
 # Construct the datasets
@@ -180,6 +180,9 @@ def train(
 
             # Update weights
             if (step + 1) % accumulation_steps == 0:
+                # Gradient clipping
+                nn.utils.clip_grad_norm_(model.parameters(), max_norm=10, norm_type=2)
+                # Update weights
                 optimizer.step()
                 optimizer.zero_grad()
 
@@ -362,17 +365,32 @@ def main(config):
             out_chans=1,
         )
     elif model_name == "Video-Retina-UNETR":
-        model = VideoRetinaUnetr(
-            img_size=config["Model"]["image_size"],
-            patch_size=config["Model"]["patch_size"],
-            embed_dim=config["Model"]["embed_dim"],
-            depth=config["Model"]["depth"],
-            num_heads=config["Model"]["num_heads"],
-            mlp_ratio=config["Model"]["mlp_ratio"],
-            norm_layer=partial(nn.LayerNorm, eps=1e-6),
-            skip_chans=config["Model"]["skip_chans"],
-            out_chans=1,
-        )
+        if config["Train"]["with_aqe"]:
+            model = VideoRetinaUnetr(
+                img_size=config["Model"]["image_size"],
+                patch_size=config["Model"]["patch_size"],
+                embed_dim=config["Model"]["embed_dim"],
+                depth=config["Model"]["depth"],
+                num_heads=config["Model"]["num_heads"],
+                mlp_ratio=config["Model"]["mlp_ratio"],
+                norm_layer=partial(nn.LayerNorm, eps=1e-6),
+                skip_chans=config["Model"]["skip_chans"],
+                out_chans=1,
+                det_with_aqe=True,
+            )
+        else:
+            model = VideoRetinaUnetr(
+                img_size=config["Model"]["image_size"],
+                patch_size=config["Model"]["patch_size"],
+                embed_dim=config["Model"]["embed_dim"],
+                depth=config["Model"]["depth"],
+                num_heads=config["Model"]["num_heads"],
+                mlp_ratio=config["Model"]["mlp_ratio"],
+                norm_layer=partial(nn.LayerNorm, eps=1e-6),
+                skip_chans=config["Model"]["skip_chans"],
+                out_chans=1,
+                det_with_aqe=False,
+            )
 
     # load pretrained ViT weights
     vit_pretrained_weights = "MAE ImageNet 1k"
@@ -423,7 +441,10 @@ def main(config):
     seg_focal_loss = SegFocalLoss(alpha=0.75, gamma=2).to(device)
     seg_dice_loss = SegDiceLoss().to(device)
     if model_name == "Video-Retina-UNETR":
-        det_loss = DetLoss(alpha=0.25, gamma=2.0, siou_loss=SIoULoss()).to(device)
+        if config["Train"]["with_aqe"]:
+            det_loss = DetLoss(alpha=0.25, gamma=2.0, siou_loss=SIoULoss(), aqe_loss=AQELoss()).to(device)
+        else:
+            det_loss = DetLoss(alpha=0.25, gamma=2.0, siou_loss=SIoULoss()).to(device)
     else:
         det_loss = None
 
@@ -458,6 +479,10 @@ def main(config):
             "Base Learning Rate": config["Train"]["blr"],
             "Learning Rate Scheduler": "Linear Decay",
             "Optimizer": "AdamW",
+            "Loss Functions": "dice + focal + cls_focal + reg_l1",
+            # "Theta Regression Reference": "Anchor Left-Top to Right-Bottom Orientation",
+            "Theta Regression Reference": "Horizontal Orientation",
+            "Angle Quantization Estimation": config["Train"]["with_aqe"],
         },
     )
     # --------------------------------------------------------------------------
