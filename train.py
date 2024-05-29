@@ -138,6 +138,7 @@ def train(
 
             # Segmentation ground truth masks
             masks = samples["masks"].to(device)  # [N, T, H, W]
+            masks = masks[:, -1, :, :].unsqueeze(1)  # [N, 1, H, W]
 
             # Detection ground truth annotations
             if model_name == "Video-Retina-UNETR" and train_det_head:
@@ -145,23 +146,22 @@ def train(
                 labels = samples["labels"].to(device)  # [N, T]
                 labels = labels.unsqueeze(-1)  # [N, T, 1]
                 annotations = torch.cat([cals, labels], dim=-1)  # [N, T, 5]
+                annotations = annotations[:, -1, :].unsqueeze(1)  # [N, 1, 5]
 
             # Forward pass
             if model_name == "Video-Retina-UNETR":
-                vis_pred_masks, classifications, regressions = model(images)
-                # [N, 1, H, W], [N, num_total_anchors, num_classes], [N, num_total_anchors, 4]
+                pred_masks, pred_classifications, pred_regressions = model(images)
+                # [N, 1, H, W], [N, num_total_anchors, num_classes], [N, num_total_anchors, 4 or 5]
             else:
-                vis_pred_masks = model(images)  # [N, 1, H, W]
+                pred_masks = model(images)  # [N, 1, H, W]
 
             # Calculate loss (use the last frame as the target mask)
-            masks = masks[:, -1, :, :].unsqueeze(1)  # [N, 1, H, W]
-            # fl = seg_focal_loss(vis_pred_masks, masks, ignore_index=ignore_index)
-            dl = seg_dice_loss(vis_pred_masks, masks, ignore_index=ignore_index)
-            # ftl = seg_ft_loss(vis_pred_masks, masks)
-            # il = seg_iou_loss(vis_pred_masks, masks)
+            # fl = seg_focal_loss(pred_masks, masks, ignore_index=ignore_index)
+            dl = seg_dice_loss(pred_masks, masks, ignore_index=ignore_index)
+            # ftl = seg_ft_loss(pred_masks, masks)
+            # il = seg_iou_loss(pred_masks, masks)
             if model_name == "Video-Retina-UNETR" and train_det_head:  # with the detection head
-                annotations = annotations[:, -1, :].unsqueeze(1)  # [N, 1, 5]
-                cl, rl = det_loss(classifications, regressions, anchors_pos, annotations)
+                cl, rl = det_loss(pred_classifications, pred_regressions, anchors_pos, annotations)
 
             # Calculate total loss
             loss = dl  # +  fl #+ il+  fl  #  ftl
@@ -169,8 +169,8 @@ def train(
                 loss = loss + cl + rl  ## TODO: adaptively modify the weight for the detection loss
 
             # Calculate the segmentation Dice score & IoU score
-            seg_dscore = seg_dice_score(vis_pred_masks, masks)
-            seg_iscore = seg_iou_score(vis_pred_masks, masks)
+            seg_dscore = seg_dice_score(pred_masks, masks)
+            seg_iscore = seg_iou_score(pred_masks, masks)
 
             # update running loss & score
             running_results["Loss"] += dl.item()  # + fl.item()
@@ -205,7 +205,7 @@ def train(
 
                 # Forward pass
                 if model_name == "Video-Retina-UNETR":
-                    vis_pred_masks, classifications, regressions = model(vis_images)
+                    vis_pred_masks, vis_classifications, vis_regressions = model(vis_images)
                     # [N, 1, H, W], [N, num_total_anchors, num_classes], [N, num_total_anchors, 4]
                 else:
                     vis_pred_masks = model(vis_images)  # [N, 1, H, W]
@@ -255,12 +255,12 @@ def train(
 
     for epoch in range(epochs):
         optimizer.zero_grad()
-        
+
         # Reset running results
         running_results = results_dictioanry(model_name=model_name, type="running_results")
 
         running_results = train_one_epoch(model, optimizer, train_loader, running_results)
-        
+
         ## Semi Supervise: Train with Pseudo Label
         if train_pl:
             print("Training PL...")
@@ -283,7 +283,10 @@ def train(
 
         # Evaluate the model on validation data
         if model_name == "Video-Retina-UNETR":
-            val_results = evaluate(model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name, det_loss, anchors_pos)
+            if config["Train"]["with_aqe"]:
+                val_results = evaluate(model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name, det_loss, anchors_pos, with_aqe=True)
+            else:
+                val_results = evaluate(model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name, det_loss, anchors_pos)
         else:
             val_results = evaluate(model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name)
 
@@ -300,6 +303,7 @@ def train(
             val_results["Loss"] < best_val_results["Loss"]
             or val_results["Segmentation Dice Loss"] < best_val_results["Segmentation Dice Loss"]
             or val_results["Segmentation Needle EA Score"] > best_val_results["Segmentation Needle EA Score"]
+            or val_results["Segmentation Needle EAL Score"] > best_val_results["Segmentation Needle EAL Score"]
         ):
             # Update the best validation loss & IoU score
             best_val_results = val_results
@@ -330,7 +334,6 @@ def train(
             if early_stop_count == 5:
                 print("Early stopping...")
                 break
-        
 
         print(f"Best Validation Loss: {best_val_results['Loss']:.6f}")
         print("--------------------------------------------------")
@@ -369,19 +372,19 @@ def train(
         wandb.log(wandb_results)
 
         ## Semi Supervise: Pseudo labeling
-        if (pl_model_thres is not None
-            and val_results["Segmentation IoU Score"] > pl_model_thres 
-            and epoch +1 < epochs):
+        if pl_model_thres is not None and val_results["Segmentation IoU Score"] > pl_model_thres and epoch + 1 < epochs:
             ## Predict on unlabedDataset to get pseudo labels
             df = generate_pl(config, model, device, unlabeled_loader, model_name, df, pl_dir)
             print(df.head())
             ## Save csv with img folder directory, image names, pl path and confidence
-            df_csv_dir = os.path.join(pl_dir,'pl.csv')
+            df_csv_dir = os.path.join(pl_dir, "pl.csv")
             df.to_csv(df_csv_dir, index=False)  ## ./pseudo_label/model_1/pl.csv
             if len(df.index) > 0:
                 ## Rest pseudo_dataset and loader
                 if train_pl_loader is None:
-                    train_transform = AugmentationImgMaskOnly(resized_crop=True, color_jitter=True, horizontal_flip=True, image_size=config["Model"]["image_size"])
+                    train_transform = AugmentationImgMaskOnly(
+                        resized_crop=True, color_jitter=True, horizontal_flip=True, image_size=config["Model"]["image_size"]
+                    )
                     pseudo_dataset = PseudoDataset(df_csv_dir, transform=train_transform, time_window=config["Model"]["time_window"])
                     train_pl_loader = DataLoader(pseudo_dataset, batch_size=config["Train"]["batch_size"], shuffle=True, drop_last=True)
                 else:
@@ -556,7 +559,7 @@ def main(config):
         model_thres = config["Semi_Supervise"]["Pseudo_label"]["model_thres"]
         pl_thres = config["Semi_Supervise"]["Pseudo_label"]["mask_thres"]
         version = config["Semi_Supervise"]["Pseudo_label"]["pl_version"]
-    
+
     # Start a new wandb run to track this script
     wandb.init(
         # set the wandb project where this run will be logged
@@ -582,10 +585,9 @@ def main(config):
             "Theta Regression Reference": "Horizontal Orientation",
             "Angle Quantization Estimation": config["Train"]["with_aqe"],
             "Loss Functions": config["Train"]["loss"],  # dice + focal + cls_focal + reg_l1,
-
             "PL_model_thres": model_thres,
             "PL_thres": pl_thres,
-            "PL_version": version
+            "PL_version": version,
         },
     )
     # --------------------------------------------------------------------------
