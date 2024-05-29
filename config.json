@@ -42,7 +42,13 @@
 
         "easy1941" : "Sonosite_20231017_0836_1941frames_abc(易)(validation dataset)",
 
-        "Unlabeled_folder":["Sonosite_202401116_1110_276frams_abc", "Sonosite_20240102_1014_540frams_abc"]
+        "Unlabeled_folder":["Sonosite_202401116_1110_276frams_abc", 
+                        "Sonosite_20240102_1014_540frams_abc",
+                        "Sonosite_20231003_1413_1364frames_abc（hard)",
+                        "Sonosite_20231219_1122_570frames_abc（hard）",
+                        "Sonosite_20240102_0929_721frames_abc（medium)",
+                        "Sonosite_20240102_1449_742frames_abc(medium)"
+                        ]
 
     },
 
@@ -59,7 +65,7 @@
     
     "Train":{
         "retina_head" : false,
-        "experiment_id" : 4,
+        "experiment_id" : "4_v1f6",
         "visualize" : true,
 
         "batch_size" : 8,
@@ -71,7 +77,7 @@
 
     "Semi_Supervise":{
         "Pseudo_label":{
-            "model_thres": null,
+            "model_thres": 0.4,
             "mask_thres":0.97,
             "root_dir": "./pseudo_label",
             "pl_version":1

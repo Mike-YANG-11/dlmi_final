@@ -218,7 +218,8 @@ def train(
     
     train_pl = False  ## train with pseudo label or not
     if pl_model_thres is not None:
-        pl_dir = os.path.join(config["Semi_Supervise"]["Pseudo_label"]["root_dir"], f"{model_name}_{str(experiment_id)}")
+        pl_dir = os.path.join(config["Semi_Supervise"]["Pseudo_label"]["root_dir"], 
+                              f'{model_name}_{str(experiment_id)}_v{config["Semi_Supervise"]["Pseudo_label"]["pl_version"]}')
         unlabeled_loader=construct_unlabeled_datasets(config)
         df = pd.DataFrame(columns=["img_root", "img_names", "mask_path", "confidence"])
         train_pl_loader = None
@@ -245,7 +246,12 @@ def train(
 
     for epoch in range(epochs):
         optimizer.zero_grad()
+        
+        # Reset running results
+        running_results = results_dictioanry(model_name=model_name, type="running_results")
 
+        running_results = train_one_epoch(model, optimizer, train_loader, running_results)
+        
         ## Semi Supervise: Train with Pseudo Label
         if train_pl:
             print('Training PL...')
@@ -258,10 +264,6 @@ def train(
                                                  running_results=running_pl_results, 
                                                  train_det_head=False,  ## ## only train seg head
                                                  ignore_index=ignore)  ## ignore low confidence pixels in v2 when calculating loss
-        # Reset running results
-        running_results = results_dictioanry(model_name=model_name, type="running_results")
-
-        running_results = train_one_epoch(model, optimizer, train_loader, running_results)
 
         if scheduler is not None:
             # Adjust learning rate
@@ -317,26 +319,6 @@ def train(
                 print("Early stopping...")
                 break
         
-        ## Semi Supervise: Pseudo labeling
-        if (pl_model_thres is not None
-            and val_results["Segmentation IoU Score"] > pl_model_thres ):
-            ## Predict on unlabedDataset to get pseudo labels
-            df = generate_pl(config, model, device, unlabeled_loader, model_name, df, pl_dir)
-            print(df.head())
-            ## Save csv with img folder directory, image names, pl path and confidence
-            df_csv_dir = os.path.join(pl_dir,'pl.csv')
-            df.to_csv(df_csv_dir, index=False)  ## ./pseudo_label/model_1/pl.csv
-            
-            ## Rest pseudo_dataset and loader
-            if train_pl_loader is None:
-                train_transform = AugmentationImgMaskOnly(resized_crop=True, color_jitter=True, horizontal_flip=True, image_size=config["Model"]["image_size"])
-                pseudo_dataset = PseudoDataset(df_csv_dir, transform=train_transform, time_window=config["Model"]["time_window"])
-                train_pl_loader = DataLoader(pseudo_dataset, batch_size=config["Train"]["batch_size"], shuffle=True, drop_last=True)
-            else:
-                train_pl_loader.dataset.update_df_from_csv()
-                print(f"updated pl dataset length:{len(train_pl_loader.dataset)}")  ## check
-
-
 
         print(f"Best Validation Loss: {best_val_results['Loss']:.6f}")
         print("--------------------------------------------------")
@@ -373,6 +355,26 @@ def train(
         for key, value in val_results.items():
             wandb_results[f"Validation {key}"] = value
         wandb.log(wandb_results)
+
+        ## Semi Supervise: Pseudo labeling
+        if (pl_model_thres is not None
+            and val_results["Segmentation IoU Score"] > pl_model_thres 
+            and epoch +1 < epochs):
+            ## Predict on unlabedDataset to get pseudo labels
+            df = generate_pl(config, model, device, unlabeled_loader, model_name, df, pl_dir)
+            print(df.head())
+            ## Save csv with img folder directory, image names, pl path and confidence
+            df_csv_dir = os.path.join(pl_dir,'pl.csv')
+            df.to_csv(df_csv_dir, index=False)  ## ./pseudo_label/model_1/pl.csv
+            if len(df.index) > 0:
+                ## Rest pseudo_dataset and loader
+                if train_pl_loader is None:
+                    train_transform = AugmentationImgMaskOnly(resized_crop=True, color_jitter=True, horizontal_flip=True, image_size=config["Model"]["image_size"])
+                    pseudo_dataset = PseudoDataset(df_csv_dir, transform=train_transform, time_window=config["Model"]["time_window"])
+                    train_pl_loader = DataLoader(pseudo_dataset, batch_size=config["Train"]["batch_size"], shuffle=True, drop_last=True)
+                else:
+                    train_pl_loader.dataset.update_df_from_csv()
+                    print(f"updated pl dataset length:{len(train_pl_loader.dataset)}")  ## check
 
         ## start to train pseudo labels if there is at least a batch of PL
         if pl_model_thres is not None and  len(df.index) >= config["Train"]["batch_size"]:
@@ -517,6 +519,14 @@ def main(config):
     # number of parameters in the model
     num_params = sum(p.numel() for p in model.parameters())
 
+    ## pseudo label config
+    if config["Semi_Supervise"]["Pseudo_label"]["model_thres"] is None:
+        model_thres, pl_thres, version = None, None, None
+    else:
+        model_thres = config["Semi_Supervise"]["Pseudo_label"]["model_thres"]
+        pl_thres = config["Semi_Supervise"]["Pseudo_label"]["mask_thres"]
+        version = config["Semi_Supervise"]["Pseudo_label"]["pl_version"]
+    
     # Start a new wandb run to track this script
     wandb.init(
         # set the wandb project where this run will be logged
@@ -539,7 +549,11 @@ def main(config):
             "Base Learning Rate": config["Train"]["blr"],
             "Learning Rate Scheduler": "Linear Decay",
             "Optimizer": "AdamW",
-            "Loss Functions": config["Train"]["loss"]
+            "Loss Functions": config["Train"]["loss"],
+
+            "PL_model_thres": model_thres,
+            "PL_thres": pl_thres,
+            "PL_version": version
         },
     )
     # --------------------------------------------------------------------------
