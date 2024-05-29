@@ -121,7 +121,7 @@ def se_metric(coord_p, coord_g, size):
 def len_metric(coord_p, coord_g, size):
     len_p = np.sqrt((coord_p[0] + coord_p[2]) ** 2 + (coord_p[1] + coord_p[3]) ** 2)
     len_g = np.sqrt((coord_g[0] + coord_g[2]) ** 2 + (coord_g[1] + coord_g[3]) ** 2)  ## bbox length for bbox branch, seg length for seg branch?
-    len_bias = abs(len_g - len_p) / np.sqrt(size[0]**2+ size[1]**2)
+    len_bias = abs(len_g - len_p) / np.sqrt(size[0] ** 2 + size[1] ** 2)
     return max(0, (1 - len_bias)) ** 2
 
 
@@ -217,6 +217,7 @@ def line_evaluate(preds, masks):
 
     # Calculate the EA score for each sample in the batch
     ea_score_list = []
+    eal_score_list = []
     p_count = 0
     n_count = 0
     tp_count = 0
@@ -245,6 +246,8 @@ def line_evaluate(preds, masks):
         ):  # Predicted mask and ground truth mask are both not empty
             ea_score = ea_metric(pred_idx, mask_idx, size=pred.shape)
             ea_score_list.append(ea_score)
+            eal_score = eal_metric(pred_idx, mask_idx, size=pred.shape)
+            eal_score_list.append(eal_score)
             if ea_score >= 0.9:
                 tp_count += 1
             else:
@@ -262,7 +265,7 @@ def line_evaluate(preds, masks):
         ):  # Predicted mask and ground truth mask are both empty
             tn_count += 1
 
-    return np.mean(ea_score_list), p_count, n_count, tp_count, fp_count, tn_count, fn_count
+    return np.mean(ea_score_list), np.mean(eal_score_list), p_count, n_count, tp_count, fp_count, tn_count, fn_count
 
 
 # Evaluation Function
@@ -283,6 +286,7 @@ def evaluate(model, device, loader, seg_focal_loss, seg_dice_loss, model_name, d
 
     # Initialize variables to store the EA score and line metrics
     total_seg_ea_score = 0.0
+    total_seg_eal_score = 0.0
     total_p_count = 0
     total_n_count = 0
     total_seg_tp_count = 0
@@ -298,7 +302,7 @@ def evaluate(model, device, loader, seg_focal_loss, seg_dice_loss, model_name, d
             # Segmentation ground truth masks
             masks = samples["masks"].to(device)  # [N, T, H, W]
 
-            # # Detection ground truth annotations
+            # Detection ground truth annotations
             if model_name == "Video-Retina-UNETR":
                 cals = samples["cals"].to(device)  # [N, T, 4]
                 labels = samples["labels"].to(device)  # [N, T]
@@ -330,7 +334,9 @@ def evaluate(model, device, loader, seg_focal_loss, seg_dice_loss, model_name, d
             seg_iscore = seg_iou_score(pred_masks, masks)
 
             # Calculate EA score and line metrics
-            mean_seg_ea_score, p_count, n_count, seg_tp_count, seg_fp_count, seg_tn_count, seg_fn_count = line_evaluate(pred_masks, masks)
+            mean_seg_ea_score, mean_seg_eal_score, p_count, n_count, seg_tp_count, seg_fp_count, seg_tn_count, seg_fn_count = line_evaluate(
+                pred_masks, masks
+            )
 
             # Accumulate loss & score
             total_loss += loss.item()
@@ -344,6 +350,7 @@ def evaluate(model, device, loader, seg_focal_loss, seg_dice_loss, model_name, d
 
             # Accumulate EA score and line metrics
             total_seg_ea_score += mean_seg_ea_score
+            total_seg_eal_score += mean_seg_eal_score
             total_p_count += p_count
             total_n_count += n_count
             total_seg_tp_count += seg_tp_count
@@ -363,6 +370,7 @@ def evaluate(model, device, loader, seg_focal_loss, seg_dice_loss, model_name, d
         "Segmentation Dice Score": total_seg_dice_score / len(loader),
         "Segmentation IoU Score": total_seg_iou_score / len(loader),
         "Segmentation Needle EA Score": total_seg_ea_score / len(loader),
+        "Segmentation Needle EAL Score": total_seg_eal_score / len(loader),
         "Needle Positive Count": total_p_count,
         "Needle Negative Count": total_n_count,
         "Segmentation Needle TP Count": total_seg_tp_count,
@@ -393,6 +401,7 @@ def results_dictioanry(model_name, type):
             "Segmentation Dice Score": 0.0,
             "Segmentation IoU Score": 0.0,
             "Segmentation Needle EA Score": 0.0,
+            "Segmentation Needle EAL Score": 0.0,
             "Needle Positive Count": 0,
             "Needle Negative Count": 0,
             "Segmentation Needle TP Count": 0,
