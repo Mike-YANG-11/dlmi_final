@@ -2,8 +2,6 @@
 
 import cv2
 
-import math
-
 import numpy as np
 
 import matplotlib.pyplot as plt
@@ -136,8 +134,8 @@ def show_preds_with_det_head(
     pred_regressions,
     anchors_pos,
     max_samples=2,
-    topk=3,
-    conf_thresh=0.2,
+    topk=1,
+    conf_thresh=0.1,
     with_aqe=False,
     figsize=(8, 8),
     font_size=10,
@@ -182,9 +180,7 @@ def show_preds_with_det_head(
                 )
                 # draw top-k endpoint (red: top-1, green: top-2, blue: top-3)
                 for k in range(topk_score.shape[0]):
-                    x1, y1, x2, y2 = topk_endpoints[k].int()
-                    x1, y1, x2, y2 = np.uint8(x1), np.uint8(y1), np.uint8(x2), np.uint8(y2)
-                    print(x1, y1, x2, y2)
+                    x1, y1, x2, y2 = np.uint8(topk_endpoints[k])
                     if k == 0:
                         color = (255, 0, 0)
                     elif k == 1:

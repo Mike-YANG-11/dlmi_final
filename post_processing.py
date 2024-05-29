@@ -4,14 +4,12 @@ import cv2
 
 import numpy as np
 
-import matplotlib.pyplot as plt
-
 import torch
 
 from dataset import 按斜率滑動到裁剪範圍內
 
 
-def detect_postprocessing(pred_cls, pred_reg, anchors_pos, image_width, image_height, conf_thresh=0.2, topk=3, with_aqe=False, factor=0.7):
+def detect_postprocessing(pred_cls, pred_reg, anchors_pos, image_width, image_height, conf_thresh=0.1, topk=1, with_aqe=False, factor=0.7):
     """
     Post-processing for the detection head predictions
     Args:
@@ -82,11 +80,11 @@ def detect_postprocessing(pred_cls, pred_reg, anchors_pos, image_width, image_he
     topk_pred_theta = pred_reg[topk_idx, 2]  # [k,]
     if with_aqe:
         topk_pred_sigma = pred_reg[topk_idx, 3]  # [k,]
-        print(f"sigmas of top-k anchors: {topk_pred_sigma}")
+        # print(f"sigmas of top-k anchors: {topk_pred_sigma}")
         topk_pred_length = torch.exp(pred_reg[topk_idx, 4]) * topk_anchors_length  # [k,]
     else:
         topk_pred_length = torch.exp(pred_reg[topk_idx, 3]) * topk_anchors_length
-    print(f"conf of top-k anchors: {conf[topk_idx]}")
+    # print(f"conf of top-k anchors: {conf[topk_idx]}")
 
     # concate the predicted center, angle, length
     topk_pred_cals = torch.stack([topk_pred_ctr_x, topk_pred_ctr_y, topk_pred_theta, topk_pred_length], dim=-1)  # [k, 4]
@@ -110,7 +108,7 @@ def detect_postprocessing(pred_cls, pred_reg, anchors_pos, image_width, image_he
     for k in range(topk_endpoints.shape[0]):
         # confidence thresholding again
         if conf[topk_idx][k] == 0:
-            topk_endpoints[k] = torch.zeros_like(topk_endpoints[k])
+            topk_endpoints[k] = torch.zeros_like(topk_endpoints[k], dtype=torch.float32)
         else:
             endpoints = 按斜率滑動到裁剪範圍內(topk_endpoints[k], 0, 0, image_width, image_height)  # [2, 2]
             endpoints = [endpoints[0][0], endpoints[0][1], endpoints[1][0], endpoints[1][1]]  # [4,]
