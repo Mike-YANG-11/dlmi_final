@@ -24,7 +24,7 @@ class SegFocalLoss(nn.Module):
         targets = targets.reshape(-1)  # [N, 1, H, W] -> [N*H*W]
         if ignore_index is not None:
             # Create a mask where targets are not equal to the ignore_index
-            mask = (targets != ignore_index)
+            mask = targets != ignore_index
             # Apply the mask to preds and targets to filter out ignored values
             preds = preds[mask]
             targets = targets[mask]
@@ -49,10 +49,10 @@ class SegDiceLoss(nn.Module):
         # flatten prediction and target tensors
         preds = preds.reshape(-1)  # [N, 1, H, W] -> [N*H*W]
         targets = targets.reshape(-1)  # [N, 1, H, W] -> [N*H*W]
-        
+
         if ignore_index is not None:
             # Create a mask where targets are not equal to the ignore_index
-            mask = (targets != ignore_index)
+            mask = targets != ignore_index
             # Apply the mask to preds and targets to filter out ignored values
             preds = preds[mask]
             targets = targets[mask]
@@ -73,68 +73,71 @@ class SegFocalTverskyLoss(nn.Module):
         TL = TP / (TP + alpha* FN + beta* FP)
         Set α > β to reduce false positive;  (maybe for Semi Sup?)
         set β > α will to reduce false negatives
-        """   
-        
-        #flatten label and prediction tensors
+        """
+
+        # flatten label and prediction tensors
         inputs = inputs.reshape(-1)
         targets = targets.reshape(-1)
-        
-        #True Positives, False Positives & False Negatives
-        TP = (inputs * targets).sum()    
-        FP = ((1-targets) * inputs).sum()
-        FN = (targets * (1-inputs)).sum()
-        
-        Tversky = (TP + smooth) / (TP + alpha*FP + beta*FN + smooth)  
-        FocalTversky = (1 - Tversky)**gamma
-                       
+
+        # True Positives, False Positives & False Negatives
+        TP = (inputs * targets).sum()
+        FP = ((1 - targets) * inputs).sum()
+        FN = (targets * (1 - inputs)).sum()
+
+        Tversky = (TP + smooth) / (TP + alpha * FP + beta * FN + smooth)
+        FocalTversky = (1 - Tversky) ** gamma
+
         return FocalTversky
 
-### Error:  Assertion `input_val >= zero && input_val <= one` failed. (predict Nan when evaluation at epoch 1) 
+
+### Error:  Assertion `input_val >= zero && input_val <= one` failed. (predict Nan when evaluation at epoch 1)
 ## Combo Loss fo Segmentation
 ## https://www.kaggle.com/code/bigironsphere/loss-function-library-keras-pytorch?scriptVersionId=68471013&cellId=27
 class SegComboLoss(nn.Module):
     def __init__(self, weight=None, size_average=True, alpha=0.5, beta=0.7):
         super(SegComboLoss, self).__init__()
-        self.alpha = alpha    # weighted contribution of modified CE loss compared to Dice loss
-        self.beta = beta          # < 0.5 penalises FP more, > 0.5 penalises FN more
+        self.alpha = alpha  # weighted contribution of modified CE loss compared to Dice loss
+        self.beta = beta  # < 0.5 penalises FP more, > 0.5 penalises FN more
 
     def forward(self, inputs, targets, smooth=1, eps=1e-9):
-        
-        #flatten label and prediction tensors
+
+        # flatten label and prediction tensors
         inputs = inputs.reshape(-1)
         targets = targets.reshape(-1)
-        
-        #True Positives, False Positives & False Negatives
-        intersection = (inputs * targets).sum()    
-        dice = (2. * intersection + smooth) / (inputs.sum() + targets.sum() + smooth)
-        
-        inputs = torch.clamp(inputs, eps, 1.0 - eps)       
-        out = - (self.beta * ((targets * torch.log(inputs)) + ((1 - self.beta) * (1.0 - targets) * torch.log(1.0 - inputs))))
+
+        # True Positives, False Positives & False Negatives
+        intersection = (inputs * targets).sum()
+        dice = (2.0 * intersection + smooth) / (inputs.sum() + targets.sum() + smooth)
+
+        inputs = torch.clamp(inputs, eps, 1.0 - eps)
+        out = -(self.beta * ((targets * torch.log(inputs)) + ((1 - self.beta) * (1.0 - targets) * torch.log(1.0 - inputs))))
         weighted_ce = out.mean(-1)
         combo = (self.alpha * weighted_ce) - ((1 - self.alpha) * dice)
-        
+
         return combo
 
-#PyTorch
+
+# PyTorch
 class SegIoULoss(nn.Module):
     def __init__(self, weight=None, size_average=True):
         super(SegIoULoss, self).__init__()
 
     def forward(self, inputs, targets, smooth=1):
-       
-        #flatten label and prediction tensors
+
+        # flatten label and prediction tensors
         inputs = inputs.reshape(-1)
         targets = targets.reshape(-1)
-        
-        #intersection is equivalent to True Positive count
-        #union is the mutually inclusive area of all labels & predictions 
+
+        # intersection is equivalent to True Positive count
+        # union is the mutually inclusive area of all labels & predictions
         intersection = (inputs * targets).sum()
         total = (inputs + targets).sum()
-        union = total - intersection 
-        
-        IoU = (intersection + smooth)/(union + smooth)
-                
+        union = total - intersection
+
+        IoU = (intersection + smooth) / (union + smooth)
+
         return 1 - IoU
+
 
 # Hausdorff Distance Loss for Segmentation
 class SegHDTLoss(nn.Module):
@@ -204,11 +207,12 @@ class SegHDTLoss(nn.Module):
 # Loss for Object Detection
 # https://github.com/yhenon/pytorch-retinanet/blob/master/retinanet/losses.py
 class DetLoss(nn.Module):
-    def __init__(self, alpha=0.25, gamma=2.0, siou_loss=None):
+    def __init__(self, alpha=0.25, gamma=2.0, siou_loss=None, aqe_loss=None):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
         self.siou_loss = siou_loss
+        self.aqe_loss = aqe_loss
 
     def coordinates_transform(self, anchors_pos):
         """
@@ -232,10 +236,7 @@ class DetLoss(nn.Module):
         # length
         anchors_length = torch.sqrt(torch.pow(x2 - x1, 2) + torch.pow(y2 - y1, 2))
 
-        # angle (since the original anchor coordinates are left-top and right-bottom, the angle is in the left-top to right-bottom orientation)
-        anchors_theta = torch.where(x1 == x2, torch.sign(y2 - y1) * math.pi / 2, torch.atan((y2 - y1) / (x2 - x1)))
-
-        return anchors_ctr_x, anchors_ctr_y, anchors_width, anchors_height, anchors_length, anchors_theta
+        return anchors_ctr_x, anchors_ctr_y, anchors_width, anchors_height, anchors_length
 
     def calc_iou(self, anchors_pos, cal_annotations):
         """
@@ -314,15 +315,15 @@ class DetLoss(nn.Module):
         regression_losses = []
 
         # convert left-top & right-bottom coordinates to center, width, height, length, and angle
-        anchors_ctr_x, anchors_ctr_y, anchors_width, anchors_height, anchors_length, anchors_theta = self.coordinates_transform(anchors_pos)
+        anchors_ctr_x, anchors_ctr_y, anchors_width, anchors_height, anchors_length = self.coordinates_transform(anchors_pos)
 
         for idx in range(batch_size):
             classification = classifications[idx, :, :]  # shape (num_total_anchors, num_classes)
             regression = regressions[idx, :, :]  # shape (num_total_anchors, 4)
             annotation = annotations[idx, :, :]  # shape (num_annotations, 5)
 
-            # remove the annotations with cls_id = -1
-            annotation = annotation[annotation[:, 4] != -1]  # label -1 as background class
+            # remove the annotations with cls_id = -1 (background class)
+            annotation = annotation[annotation[:, 4] != -1]
 
             # clamp the classification values to avoid log(0)
             classification = torch.clamp(classification, 1e-4, 1.0 - 1e-4)
@@ -352,14 +353,14 @@ class DetLoss(nn.Module):
             IoU_max, IoU_argmax = torch.max(IoU, dim=1)  # shape (num_total_anchors,) both
 
             # assign class labels to the anchors based on the IoU values
-            # max IoU < 0.4 are negative anchors (all cls_id = 0)
-            # max IoU > 0.5 are positive anchors (corresponding cls_id = 1)
-            # max IoU in [0.4, 0.5) are ignored anchors (all cls_id = -1)
+            # max IoU < 0.4 are negative anchors (all cls labels = 0)
+            # max IoU > 0.5 are positive anchors (corresponding cls label = 1)
+            # max IoU in [0.4, 0.5) are ignored anchors (all cls labels = -1)
 
-            # all the anchors are initialized as ignored anchors (all cls_id = -1)
+            # all the anchors are initialized as ignored anchors (all cls labels = -1)
             targets = torch.ones(classification.shape).cuda() * -1
 
-            # assign negative anchors (all cls_id = 0)
+            # assign negative anchors (all cls labels = 0)
             targets[torch.lt(IoU_max, 0.4), :] = 0
 
             # assign positive anchor indices
@@ -397,7 +398,7 @@ class DetLoss(nn.Module):
                 alpha_factor = torch.where(torch.eq(targets, 1.0), alpha_factor, 1.0 - alpha_factor)
                 focal_loss = alpha_factor * focal_loss
 
-            # ignore the anchors with all cls_id = -1
+            # ignore the anchors with all cls labels = -1
             focal_loss = torch.where(torch.ne(targets, -1.0), focal_loss, torch.zeros(focal_loss.shape).cuda())
 
             # append classification loss to the list
@@ -409,50 +410,156 @@ class DetLoss(nn.Module):
                 assigned_annotations = assigned_annotations[positive_indices, :]
 
                 # -------------------------------------------------------------------------------
-                # SIoU loss calculation using center, angle, length
-                anchors_ctr_x_posit = anchors_ctr_x[positive_indices]
-                anchors_ctr_y_posit = anchors_ctr_y[positive_indices]
-                anchors_width_posit = anchors_width[positive_indices]
-                anchors_height_posit = anchors_height[positive_indices]
-                anchors_length_posit = anchors_length[positive_indices]
-                anchors_theta_posit = anchors_theta[positive_indices]
+                # EAL regression loss calculation using center, angle, length
+                if self.aqe_loss is None:
+                    anchors_ctr_x_posit = anchors_ctr_x[positive_indices]
+                    anchors_ctr_y_posit = anchors_ctr_y[positive_indices]
+                    anchors_width_posit = anchors_width[positive_indices]
+                    anchors_height_posit = anchors_height[positive_indices]
+                    anchors_length_posit = anchors_length[positive_indices]
 
-                # use the predicted shifts to compute the final regression center, angle, length
-                pred_ctr_x = regression[positive_indices, 0] * anchors_width_posit + anchors_ctr_x_posit
-                pred_ctr_y = regression[positive_indices, 1] * anchors_height_posit + anchors_ctr_y_posit
+                    gt_ctr_x = assigned_annotations[:, 0]
+                    gt_ctr_y = assigned_annotations[:, 1]
+                    gt_theta = assigned_annotations[:, 2]
+                    gt_length = assigned_annotations[:, 3]
 
-                """ Design the regression for angle and length """
-                ## TODO: check the design of the angle regression
+                    # clip the length to avoid 0 or negative values
+                    gt_length = torch.clamp(gt_length, min=1)
 
-                # version 1: the reference angle is the left-top to right-bottom orientation of the anchor
-                pred_theta = regression[positive_indices, 2] + anchors_theta_posit
+                    """ Design the regression for center, angle, length """
+                    # regression targets
+                    targets_dx = (gt_ctr_x - anchors_ctr_x_posit) / anchors_width_posit
+                    targets_dy = (gt_ctr_y - anchors_ctr_y_posit) / anchors_height_posit
+                    targets_theta = gt_theta
+                    targets_dl = torch.log(gt_length / anchors_length_posit)  ## TODO: anchor diagonal length or anchor width?
 
-                # version 2: the reference angle is the horizontal orientation
-                # this design is not good since the reference angle is consistent for all anchors)
+                    # regression targets scaling for better convergence
+                    targets_dx = targets_dx / 0.5
+                    targets_dy = targets_dy / 0.5
+                    targets_dl = targets_dl / 0.5
+
+                    # difference between the targets and the regression values
+                    regression_dx_diff = torch.abs(targets_dx - regression[positive_indices, 0])
+                    regression_dy_diff = torch.abs(targets_dy - regression[positive_indices, 1])
+                    # regression_theta_diff = torch.abs(torch.sin(targets_theta - regression[positive_indices, 2]))  ## TODO: is sin still necessary?
+                    regression_theta_diff = torch.abs(targets_theta - regression[positive_indices, 2])  ## TODO: is sin still necessary?
+                    regression_dl_diff = torch.abs(targets_dl - regression[positive_indices, 3])
+
+                    # smooth L1 loss (less sensitive to outliers, prevents exploding gradients)
+                    regression_dx_loss = torch.where(
+                        torch.le(regression_dx_diff, 1.0), 0.5 * torch.pow(regression_dx_diff, 2), regression_dx_diff - 0.5
+                    )
+                    regression_dy_loss = torch.where(
+                        torch.le(regression_dy_diff, 1.0), 0.5 * torch.pow(regression_dy_diff, 2), regression_dy_diff - 0.5
+                    )
+                    regression_theta_loss = torch.where(
+                        torch.le(regression_theta_diff, 1.0), 0.5 * torch.pow(regression_theta_diff, 2), regression_theta_diff - 0.5
+                    )
+                    regression_dl_loss = torch.where(
+                        torch.le(regression_dl_diff, 1.0), 0.5 * torch.pow(regression_dl_diff, 2), regression_dl_diff - 0.5
+                    )
+                    """ End of design """
+
+                    reg_loss_weight = 5
+                    reg_loss = reg_loss_weight * (regression_dx_loss + regression_dy_loss + regression_theta_loss + regression_dl_loss)
+
+                # -------------------------------------------------------------------------------
+
+                # -------------------------------------------------------------------------------
+                # AQE regression loss calculation using center, angle, sigma, length
+                if self.aqe_loss is not None:
+                    anchors_ctr_x_posit = anchors_ctr_x[positive_indices]
+                    anchors_ctr_y_posit = anchors_ctr_y[positive_indices]
+                    anchors_width_posit = anchors_width[positive_indices]
+                    anchors_height_posit = anchors_height[positive_indices]
+                    anchors_length_posit = anchors_length[positive_indices]
+
+                    gt_ctr_x = assigned_annotations[:, 0]
+                    gt_ctr_y = assigned_annotations[:, 1]
+                    gt_theta = assigned_annotations[:, 2]
+                    gt_length = assigned_annotations[:, 3]
+
+                    # clip the length to avoid 0 or negative values
+                    gt_length = torch.clamp(gt_length, min=1)
+
+                    """ Design the regression for center, length """
+                    # regression targets
+                    targets_dx = (gt_ctr_x - anchors_ctr_x_posit) / anchors_width_posit
+                    targets_dy = (gt_ctr_y - anchors_ctr_y_posit) / anchors_height_posit
+                    targets_dl = torch.log(gt_length / anchors_length_posit)  ## TODO: anchor diagonal length or anchor width?
+
+                    # regression targets scaling for better convergence
+                    targets_dx = targets_dx / 0.5
+                    targets_dy = targets_dy / 0.5
+                    targets_dl = targets_dl / 0.5
+
+                    # difference between the targets and the regression values
+                    regression_dx_diff = torch.abs(targets_dx - regression[positive_indices, 0])
+                    regression_dy_diff = torch.abs(targets_dy - regression[positive_indices, 1])
+                    regression_dl_diff = torch.abs(targets_dl - regression[positive_indices, 4])
+
+                    # smooth L1 loss (less sensitive to outliers, prevents exploding gradients)
+                    regression_dx_loss = torch.where(
+                        torch.le(regression_dx_diff, 1.0), 0.5 * torch.pow(regression_dx_diff, 2), regression_dx_diff - 0.5
+                    )
+                    regression_dy_loss = torch.where(
+                        torch.le(regression_dy_diff, 1.0), 0.5 * torch.pow(regression_dy_diff, 2), regression_dy_diff - 0.5
+                    )
+                    regression_dl_loss = torch.where(
+                        torch.le(regression_dl_diff, 1.0), 0.5 * torch.pow(regression_dl_diff, 2), regression_dl_diff - 0.5
+                    )
+                    """ End of design """
+
+                    """ Design the regression for angle quality estimation """
+                    pred_theta = regression[positive_indices, 2]
+                    pred_sigma = regression[positive_indices, 3]
+
+                    # calculate the angle loss using AQE loss
+                    regression_theta_loss = self.aqe_loss(pred_theta, pred_sigma, gt_theta)
+
+                    # print(f"regression_dx_loss {regression_dx_loss.mean()}")
+                    # print(f"regression_dy_loss {regression_dy_loss.mean()}")
+                    # print(f"regression_theta_loss {regression_theta_loss}")
+                    # print(f"regression_dl_loss {regression_dl_loss.mean()}")
+                    # print("---------------------------------------")
+
+                    reg_loss_weight = 5
+                    reg_loss = reg_loss_weight * (regression_dx_loss + regression_dy_loss + regression_theta_loss + regression_dl_loss)
+                # -------------------------------------------------------------------------------
+
+                # -------------------------------------------------------------------------------
+                # # SIoU loss calculation using center, angle, length
+                # anchors_ctr_x_posit = anchors_ctr_x[positive_indices]
+                # anchors_ctr_y_posit = anchors_ctr_y[positive_indices]
+                # anchors_width_posit = anchors_width[positive_indices]
+                # anchors_height_posit = anchors_height[positive_indices]
+                # anchors_length_posit = anchors_length[positive_indices]
+                # anchors_theta_posit = anchors_theta[positive_indices]
+
+                # # use the predicted shifts to compute the final regression center, angle, length
+                # pred_ctr_x = regression[positive_indices, 0] * anchors_width_posit + anchors_ctr_x_posit
+                # pred_ctr_y = regression[positive_indices, 1] * anchors_height_posit + anchors_ctr_y_posit
+
+                # """ Design the regression for angle and length """
+                # ## TODO: check the design of the angle regression
+
+                # # version 1: the reference angle is the left-top to right-bottom orientation of the anchor
+                # pred_theta = regression[positive_indices, 2] + anchors_theta_posit
+
+                # # version 2: the reference angle is the horizontal orientation
+                # # this design is not good since the reference angle is consistent for all anchors)
                 # pred_theta = regression[positive_indices, 2]
 
-                # version 3: the reference angle is the orientation of the assigned annotation
-                # this angle regression target no longer contatins the information of the direction of the angle
-                # but only determines how sloped the line is (positive for more sloped, negative for less sloped)
-                # anchors_theta_posit = anchors_theta_posit * torch.where(assigned_annotations[:, 4] == 0, 1, -1)
-                # pred_theta = torch.zeros_like(anchors_theta_posit, dtype=torch.float32).cuda()
-                # for pos_idx in range(pred_theta.shape[0]):
-                #     if anchors_theta_posit[pos_idx] > 0:
-                #         # left-top to right-bottom orientation: positive regression results in clockwise rotation
-                #         pred_theta[pos_idx] = anchors_theta_posit[pos_idx] + regression[positive_indices, 2][pos_idx]
-                #     else:
-                #         # right-top to left-bottom orientation: positive regression results in counter-clockwise rotation
-                #         pred_theta[pos_idx] = anchors_theta_posit[pos_idx] - regression[positive_indices, 2][pos_idx]
+                # # Although the length regression follows the original design, the training results are not good
+                # pred_length = torch.exp(regression[positive_indices, 3]) * anchors_length_posit  ## TODO: check this design
+                # """ End of design """
 
-                # Although the length regression follows the original design, the training results are not good
-                pred_length = torch.exp(regression[positive_indices, 3]) * anchors_length_posit  ## TODO: check this design
-                """ End of design """
+                # # prediceted center, angle, length after regression
+                # pred_cal = torch.cat((pred_ctr_x.unsqueeze(1), pred_ctr_y.unsqueeze(1), pred_theta.unsqueeze(1), pred_length.unsqueeze(1)), dim=1)
 
-                # prediceted center, angle, length after regression
-                pred_cal = torch.cat((pred_ctr_x.unsqueeze(1), pred_ctr_y.unsqueeze(1), pred_theta.unsqueeze(1), pred_length.unsqueeze(1)), dim=1)
+                # # calculate the SIoU loss
+                # reg_loss = self.siou_loss(pred_cal, assigned_annotations)
 
-                # calculate the SIoU loss
-                reg_loss = self.siou_loss(pred_cal, assigned_annotations)
                 # -------------------------------------------------------------------------------
 
                 # -------------------------------------------------------------------------------
@@ -596,3 +703,53 @@ class SIoULoss(nn.Module):
         # print(f"needle angle {needle_angle_cost}")
 
         return 1 - (iou + 0.5 * (distance_cost + shape_cost)) + needle_angle_cost * self.needle_angle_cost_weight
+
+
+# Angle Quality Estimation Loss
+# https://ieeexplore.ieee.org/document/10172272
+# https://github.com/GC-WSL/AQE-Det/blob/main/aqe_loss.py#L29
+class AQELoss(nn.Module):
+    def __init__(self, loss_weight=0.1, angle_resolution=1):
+        super().__init__()
+        self.loss_weight = loss_weight
+        self.angle_resolution = angle_resolution
+        self.ce = nn.CrossEntropyLoss(reduction="mean")
+
+    def forward(self, pred_angle, pred_sigma, target_angle):
+        """
+        Compute the angle loss using the angle prediction, angle sigma, target angle.
+        Formualate as a distribution estimation problem and use the cross-entropy loss.
+
+        Args:
+            pred_angle (torch.Tensor): The predicted angle values. Shape (num_positive_anchors,).
+            pred_sigma (torch.Tensor): The predicted angle sigma values. Shape (num_positive_anchors,).
+            target_angle (torch.Tensor): The target angle values. Shape (num_positive_anchors,).
+
+        Returns:
+            angle_loss (torch.Tensor): The angle loss value.
+        """
+        # target_angle in range [-pi/2 to pi/2]
+        target_angle = target_angle + math.pi / 2  # in range [0 to pi]
+
+        # pred_angle in range [-pi/2 to pi/2]
+        pred_angle = pred_angle + math.pi / 2  # in range [0 to pi]
+
+        # pred_sigma already in range [0 to 1]
+
+        # angle values at each angle resolution
+        gauss_x = torch.from_numpy((np.array(range(0, 180 * self.angle_resolution, 1)) / 180 * self.angle_resolution) * math.pi).cuda().float()
+
+        # predicted angle and sigma repeat for each angle resolution (for distribution calculation)
+        angle_label = pred_angle.repeat(180 * self.angle_resolution).reshape(180 * self.angle_resolution, -1).permute(1, 0).cuda().float()
+        pred_sigma = pred_sigma.repeat(180 * self.angle_resolution).reshape(180 * self.angle_resolution, -1).permute(1, 0).cuda().float()
+
+        # preditcted gaussian distribution
+        gauss_label = torch.exp(-((gauss_x - angle_label) ** 2) / (2 * pred_sigma**2 + 1e-8))
+
+        # target angle index for cross-entropy loss
+        angle_target_index = ((180 * self.angle_resolution) * (target_angle / math.pi)).long().reshape(-1)
+
+        # cross-entropy loss
+        angle_loss = self.loss_weight * (self.ce(gauss_label, angle_target_index) - 4)
+
+        return angle_loss

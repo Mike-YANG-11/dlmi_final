@@ -27,7 +27,7 @@ from dataset import CustomDataset, Augmentation, UnlabeledDataset, PseudoDataset
 from evaluation import evaluate, seg_dice_score, seg_iou_score, results_dictioanry
 from visualization import show_dataset_samples, show_seg_preds_only
 from model import VideoUnetr, VideoRetinaUnetr
-from loss import SegFocalLoss, SegDiceLoss, SIoULoss, DetLoss, SegFocalTverskyLoss, SegIoULoss
+from loss import SegFocalLoss, SegDiceLoss, SegFocalTverskyLoss, SegIoULoss, DetLoss, SIoULoss, AQELoss
 from pseudolabel import generate_pl
 
 
@@ -43,22 +43,30 @@ def construct_datasets(config):
 
     train_dataset_list = []
     for folder_name in config["Data"]["Train_folder"].values():
-        subdataset = CustomDataset(os.path.join(config["Data"]["folder_dir"], folder_name), transform=train_transform, time_window=t, line_width=line_width)
+        subdataset = CustomDataset(
+            os.path.join(config["Data"]["folder_dir"], folder_name), transform=train_transform, time_window=t, line_width=line_width
+        )
         train_dataset_list.append(subdataset)
 
     valid_dataset_list = []
     for folder_name in config["Data"]["Val_folder"].values():
-        subdataset = CustomDataset(os.path.join(config["Data"]["folder_dir"], folder_name), transform=valid_transform, time_window=t, line_width=line_width)
+        subdataset = CustomDataset(
+            os.path.join(config["Data"]["folder_dir"], folder_name), transform=valid_transform, time_window=t, line_width=line_width
+        )
         valid_dataset_list.append(subdataset)
 
     test_med_dataset_list = []
     for folder_name in config["Data"]["Test_folder"]["Medium"].values():
-        subdataset = CustomDataset(os.path.join(config["Data"]["folder_dir"], folder_name), transform=valid_transform, time_window=t, line_width=line_width)
+        subdataset = CustomDataset(
+            os.path.join(config["Data"]["folder_dir"], folder_name), transform=valid_transform, time_window=t, line_width=line_width
+        )
         test_med_dataset_list.append(subdataset)
 
     test_hard_dataset_list = []
     for folder_name in config["Data"]["Test_folder"]["Hard"].values():
-        subdataset = CustomDataset(os.path.join(config["Data"]["folder_dir"], folder_name), transform=valid_transform, time_window=t, line_width=line_width)
+        subdataset = CustomDataset(
+            os.path.join(config["Data"]["folder_dir"], folder_name), transform=valid_transform, time_window=t, line_width=line_width
+        )
         test_hard_dataset_list.append(subdataset)
 
     """ training dataset """
@@ -84,6 +92,7 @@ def construct_datasets(config):
 
     return train_loader, valid_loader, medium_test_loader, hard_test_loader
 
+
 def construct_unlabeled_datasets(config):
     image_size = config["Model"]["image_size"]
     batch_size = config["Train"]["batch_size"]
@@ -95,12 +104,13 @@ def construct_unlabeled_datasets(config):
     for folder_name in config["Data"]["Unlabeled_folder"]:
         subdataset = UnlabeledDataset(os.path.join(config["Data"]["folder_dir"], folder_name), transform=valid_transform, time_window=t)
         dataset_list.append(subdataset)
-    
+
     unlabeled_dataset = ConcatDataset(dataset_list)
     unlabeled_loader = DataLoader(unlabeled_dataset, batch_size=batch_size, shuffle=True, drop_last=False)
 
     print(f"Number of training samples: {len(unlabeled_dataset)}")
     return unlabeled_loader
+
 
 # Training Function
 def train(
@@ -154,7 +164,7 @@ def train(
                 cl, rl = det_loss(classifications, regressions, anchors_pos, annotations)
 
             # Calculate total loss
-            loss =  dl #+  fl #+ il+  fl  #  ftl
+            loss = dl  # +  fl #+ il+  fl  #  ftl
             if model_name == "Video-Retina-UNETR" and train_det_head:  # with the detection head
                 loss = loss + cl + rl  ## TODO: adaptively modify the weight for the detection loss
 
@@ -163,8 +173,8 @@ def train(
             seg_iscore = seg_iou_score(vis_pred_masks, masks)
 
             # update running loss & score
-            running_results["Loss"] +=  dl.item() #+ fl.item()  
-            running_results["Segmentation Focal Loss"] += 0#fl.item()
+            running_results["Loss"] += dl.item()  # + fl.item()
+            running_results["Segmentation Focal Loss"] += 0  # fl.item()
             running_results["Segmentation Dice Loss"] += dl.item()
             running_results["Segmentation Dice Score"] += seg_dscore.item()
             running_results["Segmentation IoU Score"] += seg_iscore.item()
@@ -183,9 +193,9 @@ def train(
                 nn.utils.clip_grad_norm_(model.parameters(), max_norm=10, norm_type=2)
                 optimizer.step()
                 optimizer.zero_grad()
-        
+
         return running_results
-    
+
     def visualize_sample(model, loader):
         with torch.no_grad():
             for _, vis_samples in enumerate(loader):
@@ -208,19 +218,18 @@ def train(
                 show_seg_preds_only(consec_images=vis_images, consec_masks=vis_masks, preds=vis_pred_masks)
                 break
 
-    epochs=config["Train"]["epochs"]
-    accumulation_steps=config["Train"]["accumulation_steps"]
-    experiment_id=config["Train"]["experiment_id"]
+    epochs = config["Train"]["epochs"]
+    accumulation_steps = config["Train"]["accumulation_steps"]
+    experiment_id = config["Train"]["experiment_id"]
 
     ### Pseudo Label Training ==================================================
     ## if model validation if good enough, then generate pseudo labels at current epoch
     pl_model_thres = config["Semi_Supervise"]["Pseudo_label"]["model_thres"]
-    
+
     train_pl = False  ## train with pseudo label or not
     if pl_model_thres is not None:
-        pl_dir = os.path.join(config["Semi_Supervise"]["Pseudo_label"]["root_dir"], 
-                              f'{model_name}_{str(experiment_id)}_v{config["Semi_Supervise"]["Pseudo_label"]["pl_version"]}')
-        unlabeled_loader=construct_unlabeled_datasets(config)
+        pl_dir = os.path.join(config["Semi_Supervise"]["Pseudo_label"]["root_dir"], f"{model_name}_{str(experiment_id)}")
+        unlabeled_loader = construct_unlabeled_datasets(config)
         df = pd.DataFrame(columns=["img_root", "img_names", "mask_path", "confidence"])
         train_pl_loader = None
         running_pl_results = None
@@ -254,16 +263,19 @@ def train(
         
         ## Semi Supervise: Train with Pseudo Label
         if train_pl:
-            print('Training PL...')
+            print("Training PL...")
             ignore = None
             if config["Semi_Supervise"]["Pseudo_label"]["pl_version"] == 2:
                 ignore = 2
             running_pl_results = results_dictioanry(model_name="", type="running_results")
-            running_pl_results = train_one_epoch(model, optimizer, 
-                                                 train_loader=train_pl_loader, 
-                                                 running_results=running_pl_results, 
-                                                 train_det_head=False,  ## ## only train seg head
-                                                 ignore_index=ignore)  ## ignore low confidence pixels in v2 when calculating loss
+            running_pl_results = train_one_epoch(
+                model,
+                optimizer,
+                train_loader=train_pl_loader,
+                running_results=running_pl_results,
+                train_det_head=False,  ## ## only train seg head
+                ignore_index=ignore,
+            )  ## ignore low confidence pixels in v2 when calculating loss
 
         if scheduler is not None:
             # Adjust learning rate
@@ -377,7 +389,7 @@ def train(
                     print(f"updated pl dataset length:{len(train_pl_loader.dataset)}")  ## check
 
         ## start to train pseudo labels if there is at least a batch of PL
-        if pl_model_thres is not None and  len(df.index) >= config["Train"]["batch_size"]:
+        if pl_model_thres is not None and len(df.index) >= config["Train"]["batch_size"]:
             train_pl = True
 
         model.train()
@@ -443,17 +455,32 @@ def main(config):
             out_chans=1,
         )
     elif model_name == "Video-Retina-UNETR":
-        model = VideoRetinaUnetr(
-            img_size=config["Model"]["image_size"],
-            patch_size=config["Model"]["patch_size"],
-            embed_dim=config["Model"]["embed_dim"],
-            depth=config["Model"]["depth"],
-            num_heads=config["Model"]["num_heads"],
-            mlp_ratio=config["Model"]["mlp_ratio"],
-            norm_layer=partial(nn.LayerNorm, eps=1e-6),
-            skip_chans=config["Model"]["skip_chans"],
-            out_chans=1,
-        )
+        if config["Train"]["with_aqe"]:
+            model = VideoRetinaUnetr(
+                img_size=config["Model"]["image_size"],
+                patch_size=config["Model"]["patch_size"],
+                embed_dim=config["Model"]["embed_dim"],
+                depth=config["Model"]["depth"],
+                num_heads=config["Model"]["num_heads"],
+                mlp_ratio=config["Model"]["mlp_ratio"],
+                norm_layer=partial(nn.LayerNorm, eps=1e-6),
+                skip_chans=config["Model"]["skip_chans"],
+                out_chans=1,
+                det_with_aqe=True,
+            )
+        else:
+            model = VideoRetinaUnetr(
+                img_size=config["Model"]["image_size"],
+                patch_size=config["Model"]["patch_size"],
+                embed_dim=config["Model"]["embed_dim"],
+                depth=config["Model"]["depth"],
+                num_heads=config["Model"]["num_heads"],
+                mlp_ratio=config["Model"]["mlp_ratio"],
+                norm_layer=partial(nn.LayerNorm, eps=1e-6),
+                skip_chans=config["Model"]["skip_chans"],
+                out_chans=1,
+                det_with_aqe=False,
+            )
 
     # load pretrained ViT weights
     vit_pretrained_weights = "MAE ImageNet 1k"
@@ -506,7 +533,10 @@ def main(config):
     seg_ft_loss = SegFocalTverskyLoss().to(device)
     seg_iou_loss = SegIoULoss().to(device)
     if model_name == "Video-Retina-UNETR":
-        det_loss = DetLoss(alpha=0.25, gamma=2.0, siou_loss=SIoULoss()).to(device)
+        if config["Train"]["with_aqe"]:
+            det_loss = DetLoss(alpha=0.25, gamma=2.0, siou_loss=SIoULoss(), aqe_loss=AQELoss()).to(device)
+        else:
+            det_loss = DetLoss(alpha=0.25, gamma=2.0, siou_loss=SIoULoss()).to(device)
     else:
         det_loss = None
 
@@ -549,7 +579,9 @@ def main(config):
             "Base Learning Rate": config["Train"]["blr"],
             "Learning Rate Scheduler": "Linear Decay",
             "Optimizer": "AdamW",
-            "Loss Functions": config["Train"]["loss"],
+            "Theta Regression Reference": "Horizontal Orientation",
+            "Angle Quantization Estimation": config["Train"]["with_aqe"],
+            "Loss Functions": config["Train"]["loss"],  # dice + focal + cls_focal + reg_l1,
 
             "PL_model_thres": model_thres,
             "PL_thres": pl_thres,

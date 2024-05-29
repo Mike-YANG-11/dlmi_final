@@ -106,7 +106,7 @@ class CustomDataset(Dataset):
                     js["shapes"][1]["points"][1][1],
                 ]
                 # print('bbox', bbox, 'end', endpoint)
-                # label = 0  ## TODO: other cls?
+                label = 0  ## TODO: other cls?
             elif len(js["shapes"]) == 1:  ## annotated with needle
                 cal = [js["shapes"][0]["center"][0], js["shapes"][0]["center"][1], js["shapes"][0]["theta"], js["shapes"][0]["length"]]
                 endpoint = [
@@ -115,19 +115,19 @@ class CustomDataset(Dataset):
                     js["shapes"][0]["points"][1][0],
                     js["shapes"][0]["points"][1][1],
                 ]
-                # label = 0
-            else:
+                label = 0
+            else:  ## no needle
                 cal = [0, 0, 0, 0]
                 endpoint = [0, 0, 0, 0]
-                # label = -1
+                label = -1
             consec_cals.append(torch.as_tensor(cal, dtype=torch.float32))
             # consec_endpoints.append(tv_tensors.BoundingBoxes(endpoint, format="XYXY", canvas_size=[1758,1758]) )
             consec_endpoints.append(torch.as_tensor(endpoint, dtype=torch.float32))
-            # consec_labels.append(torch.as_tensor(label, dtype=torch.float32))
+            consec_labels.append(torch.as_tensor(label, dtype=torch.float32))
             f.close()
         consec_cals = torch.stack(consec_cals, dim=0)  ## [T, 4]
         consec_endpoints = torch.stack(consec_endpoints, dim=0)  ## [T, 4]
-        # consec_labels = torch.stack(consec_labels, dim=0).long()  ## [T,]
+        consec_labels = torch.stack(consec_labels, dim=0).long()  ## [T,]
 
         # Unsqueeze
         consec_images = consec_images.unsqueeze(1)  # [T, 1, H, W]
@@ -137,15 +137,15 @@ class CustomDataset(Dataset):
         if self.transform:
             consec_images, consec_masks, consec_endpoints, consec_cals = self.transform(consec_images, consec_masks, consec_endpoints, consec_cals)
 
-        # Assign labels based on the orientation of the needle
-        for t in range(consec_endpoints.shape[0]):
-            if consec_endpoints[t, :].sum() == 0:
-                consec_labels.append(torch.as_tensor(-1, dtype=torch.float32))  ## cls_id = -1: no needle
-            elif torch.sign(consec_endpoints[t][0] - consec_endpoints[t][2]) == torch.sign(consec_endpoints[t][1] - consec_endpoints[t][3]):
-                consec_labels.append(torch.as_tensor(0, dtype=torch.float32))  ## cls_id = 0: left-top to right-bottom
-            else:
-                consec_labels.append(torch.as_tensor(1, dtype=torch.float32))  ## cls_id = 1: right-top to left-bottom
-        consec_labels = torch.stack(consec_labels, dim=0).long()  ## [T,]
+        # # Assign labels based on the orientation of the needle
+        # for t in range(consec_endpoints.shape[0]):
+        #     if consec_endpoints[t, :].sum() == 0:
+        #         consec_labels.append(torch.as_tensor(-1, dtype=torch.float32))  ## cls_id = -1: no needle
+        #     elif torch.sign(consec_endpoints[t][0] - consec_endpoints[t][2]) == torch.sign(consec_endpoints[t][1] - consec_endpoints[t][3]):
+        #         consec_labels.append(torch.as_tensor(0, dtype=torch.float32))  ## cls_id = 0: left-top to right-bottom
+        #     else:
+        #         consec_labels.append(torch.as_tensor(1, dtype=torch.float32))  ## cls_id = 1: right-top to left-bottom
+        # consec_labels = torch.stack(consec_labels, dim=0).long()  ## [T,]
 
         # Squeeze
         consec_images = consec_images.squeeze(1)  # [T, H, W]
@@ -156,7 +156,7 @@ class CustomDataset(Dataset):
             "masks": consec_masks,
             "cals": consec_cals,  ## center, angle, length (x2, y2, angle, length)
             "endpoints": consec_endpoints,  ## (x1, y1, x3, y3) tensor, not tv_tensors.BoundingBoxes)
-            "labels": consec_labels,  ## cls_id = -1: no needle, 0: left-top to right-bottom, 1: right-top to left-bottom
+            "labels": consec_labels,  ## cls_id = -1: no needle, 0: with needle
             "img_path": fname_list,  ## (path_t1, path_t2, path_t3)
         }
         return sample

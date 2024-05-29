@@ -232,8 +232,9 @@ class VideoRetinaUnetr(nn.Module):
         norm_layer=nn.LayerNorm,
         skip_chans=[64, 128, 256],
         num_anchors=9,
-        num_classes=2,
+        det_num_classes=1,
         det_feature_size=256,
+        det_with_aqe=False,
     ):
         super().__init__()  # Default ViT encoder initialization parameters are for ViT-B/16
         if depth % 4 != 0:
@@ -276,8 +277,8 @@ class VideoRetinaUnetr(nn.Module):
         # --------------------------------------------------------------------------
         # retina head modules
         self.pyramid_features = PyramidFeatures(skip_chans[2], embed_dim, det_feature_size)
-        self.cls_head = ClassificationHead(det_feature_size, num_anchors, num_classes, det_feature_size)
-        self.reg_head = RegressionHead(det_feature_size, num_anchors, det_feature_size)
+        self.cls_head = ClassificationHead(det_feature_size, num_anchors, det_num_classes, det_feature_size)
+        self.reg_head = RegressionHead(det_feature_size, num_anchors, det_feature_size, det_with_aqe)
         # --------------------------------------------------------------------------
 
         # --------------------------------------------------------------------------
@@ -639,7 +640,7 @@ class ClassificationHead(nn.Module):
 
 
 class RegressionHead(nn.Module):
-    def __init__(self, num_features_in, num_anchors=9, feature_channels=256):
+    def __init__(self, num_features_in, num_anchors=9, feature_channels=256, with_aqe=False):
         super().__init__()
 
         self.conv = nn.Sequential(
@@ -653,16 +654,33 @@ class RegressionHead(nn.Module):
             nn.ReLU(),
         )
 
-        self.output = nn.Conv2d(feature_channels, num_anchors * 4, kernel_size=3, padding=1)
+        self.with_aqe = with_aqe
+
+        if self.with_aqe:  # with Angle Quality Estimation (AQE)
+            self.output = nn.Conv2d(feature_channels, num_anchors * 5, kernel_size=3, padding=1)
+        else:
+            self.output = nn.Conv2d(feature_channels, num_anchors * 4, kernel_size=3, padding=1)
+
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         x = self.conv(x)
         x = self.output(x)
-        x = x.permute(0, 2, 3, 1)  # B x H x W x (num_anchors * 4)
-        x = x.reshape(x.shape[0], -1, 4)  # B x (H x W x num_anchors) x 4
+        x = x.permute(0, 2, 3, 1)  # B x H x W x (num_anchors * 4 or 5)
 
-        # apply sigmoid with shift of -0.5 and scale of pi/2 to the angle output
+        if self.with_aqe:
+            x = x.reshape(x.shape[0], -1, 5)  # B x (H x W x num_anchors) x 5
+        else:
+            x = x.reshape(x.shape[0], -1, 4)  # B x (H x W x num_anchors) x 4
+
+        # apply sigmoid with shift of -0.5 and scale of pi to the angle output (range of -pi/2 to pi/2)
         x[:, :, 2] = (self.sigmoid(x[:, :, 2]) - 0.5) * math.pi  ## TODO: maybe modify to a flatten version of the sigmoid
 
+        # apply sigmoid to the angle quality estimation (AQE) sigma output
+        if self.with_aqe:
+            x[:, :, 3] = self.sigmoid(x[:, :, 3])
+
+        # x has shape (N, H*W*num_anchors, 4) or (N, H*W*num_anchors, 5) depending on with_aqe
+        # with AQE: (center_x, center_y, angle, length)
+        # without AQE: (center_x, center_y, angle, sigma, length)s
         return x

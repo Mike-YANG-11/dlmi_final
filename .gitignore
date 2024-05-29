@@ -2,5 +2,6 @@ __pycache__/
 logs/
 mae_pretrain_vit_base_checkpoints/
 video_unetr_checkpoints/
+video_retina_unetr_checkpoints/
 wandb/
 pseudo_label/
