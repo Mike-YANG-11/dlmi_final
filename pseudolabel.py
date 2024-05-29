@@ -53,13 +53,21 @@ def generate_pl(config, model, device, loader, model_name, df, pl_dir):
                     mask_name = "m" + last_img_name[1:].replace('.jpg', '_pl.png')  ## mXXXX_pl.png
                     mask_path = os.path.join(pl_subfolder, mask_name).replace("\\","/")   ## ./pseudo_label/model_1/20240402_1542_4074x3154_abc/mXXXX_pl.png
                     
-                    ## save mask
-                    save_image(tensor=binary_masks[0], fp=mask_path)  ### TODO: compare with past pred confidence
+                    if mask_path in df['mask_path'].tolist():   ### compare with past pred confidence
+                        # get past confidence
+                        past_confidence = df.loc[df['mask_path'] == mask_path, 'confidence'].iloc[0]
+                        if past_confidence > preds_confidence[i].item():
+                            continue
+                        else:  ## change confidence value in df
+                            df.loc[df['mask_path'] == mask_path, ['confidence']] = preds_confidence[i].item()
+                    else:
+                        ## add row to df
+                        df.loc[len(df.index)] = [img_folder_dir[i].replace("\\","/"), img_names[i], mask_path, preds_confidence[i].item()]
+                        pl_count += 1
                     
-                    ## add row to df
-                    df.loc[len(df.index)] = [img_folder_dir[i].replace("\\","/"), img_names[i], mask_path, preds_confidence[i].item()]
-                    pl_count += 1
-    
+                    ## save mask
+                    save_image(tensor=binary_masks[0], fp=mask_path)
+                    
     
     print(f"\t! Generate {pl_count} pseudo labels")
     return df
