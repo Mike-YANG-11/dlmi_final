@@ -10,8 +10,6 @@ import matplotlib.pyplot as plt
 
 import torch
 
-from dataset import 按斜率滑動到裁剪範圍內
-
 from post_processing import detect_postprocessing
 
 
