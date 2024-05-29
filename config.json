@@ -77,7 +77,7 @@
 
     "Semi_Supervise":{
         "Pseudo_label":{
-            "model_thres": 0.4,
+            "model_thres": null,
             "mask_thres":0.97,
             "root_dir": "./pseudo_label",
             "pl_version":1
