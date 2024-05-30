@@ -12,6 +12,8 @@ dlmi_final/
     ├── train.py
     ├── logs/
     │   └── ...
+    ├── pseudo_label/
+    │   └── ...
     ├── video_unetr_checkpoints/
     │   └── ...
     └── mae_pretrain_vit_base_checkpoints/
@@ -44,6 +46,10 @@ conda activate dlmi_final
   - The main training script. Run `python train.py` to train the model.
   - The directory paths should be modified in the `construct_datasets()` function.
   - Hyperparameters can be modified in the `main()` function.
+  - Pseudo label training is only activated if the mask threshold is set to non `null` value in `config.json`.
+- `pseudo_label.py`
+  - Evaluate the predicted masks of unlabeled dataset.
+  - If the confidence of the mask is high enough, then `mask_XXXX_pl.png` is saved and recorded to `pl.csv` in the `pseudo_label` folder.
 - `logs/`
   - Contains the logs for the training process.
 - `video_unetr_checkpoints/`
@@ -52,4 +58,4 @@ conda activate dlmi_final
   - Directory to the MAE ImageNet-1K pre-trained model checkpoints.
   - The checkpoint file is not included in the repository and should be downloaded from [here](https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_base.pth).
   - Place the downloaded checkpoint file in this directory.
-  
+
