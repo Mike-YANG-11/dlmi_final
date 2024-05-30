@@ -123,9 +123,9 @@ def construct_unlabeled_datasets(config):
         dataset_list.append(subdataset)
 
     unlabeled_dataset = ConcatDataset(dataset_list)
-    unlabeled_loader = DataLoader(unlabeled_dataset, batch_size=batch_size, shuffle=True, drop_last=False)
+    unlabeled_loader = DataLoader(unlabeled_dataset, batch_size=batch_size, shuffle=True, drop_last=True)  ## avoid 1 at the end
 
-    print(f"Number of training samples: {len(unlabeled_dataset)}")
+    print(f"Number of unlabeled samples: {len(unlabeled_dataset)}")
     return unlabeled_loader
 
 
@@ -173,7 +173,7 @@ def train(
                 pred_masks = model(images)  # [N, 1, H, W]
 
             # Calculate loss (use the last frame as the target mask)
-            fl = seg_focal_loss(pred_masks, masks, ignore_index=ignore_index)
+            # fl = seg_focal_loss(pred_masks, masks, ignore_index=ignore_index)
             dl = seg_dice_loss(pred_masks, masks, ignore_index=ignore_index)
             # ftl = seg_ft_loss(pred_masks, masks)
             # il = seg_iou_loss(pred_masks, masks)
@@ -181,7 +181,7 @@ def train(
                 cl, rl = det_loss(pred_classifications, pred_regressions, anchors_pos, annotations)
 
             # Calculate total loss
-            loss = dl + fl  # + il+  fl  #  ftl
+            loss = dl  # +  fl #+ il+  fl  #  ftl
             if model_name == "Video-Retina-UNETR" and train_det_head:  # with the detection head
                 loss = loss + cl + rl  ## TODO: adaptively modify the weight for the detection loss
 
@@ -190,8 +190,8 @@ def train(
             seg_iscore = seg_iou_score(pred_masks, masks)
 
             # update running loss & score
-            running_results["Loss"] += dl.item() + fl.item()
-            running_results["Segmentation Focal Loss"] += fl.item()
+            running_results["Loss"] += dl.item()  # +fl.item()
+            running_results["Segmentation Focal Loss"] += 0  # fl.item()
             running_results["Segmentation Dice Loss"] += dl.item()
             running_results["Segmentation Dice Score"] += seg_dscore.item()
             running_results["Segmentation IoU Score"] += seg_iscore.item()
@@ -260,10 +260,12 @@ def train(
     ### Pseudo Label Training ==================================================
     ## if model validation if good enough, then generate pseudo labels at current epoch
     pl_model_thres = config["Semi_Supervise"]["Pseudo_label"]["model_thres"]
+    folder_note = config["Semi_Supervise"]["Pseudo_label"]["folder_note"]
+    root_dir = config["Semi_Supervise"]["Pseudo_label"]["root_dir"]
 
     train_pl = False  ## train with pseudo label or not
     if pl_model_thres is not None:
-        pl_dir = os.path.join(config["Semi_Supervise"]["Pseudo_label"]["root_dir"], f"{model_name}_{str(experiment_id)}")
+        pl_dir = os.path.join(root_dir, f"{model_name}_{str(experiment_id)}")  # _{folder_note}
         unlabeled_loader = construct_unlabeled_datasets(config)
         df = pd.DataFrame(columns=["img_root", "img_names", "mask_path", "confidence"])
         train_pl_loader = None
@@ -415,7 +417,7 @@ def train(
         if pl_model_thres is not None and val_results["Segmentation IoU Score"] > pl_model_thres and epoch + 1 < epochs:
             ## Predict on unlabedDataset to get pseudo labels
             df = generate_pl(config, model, device, unlabeled_loader, model_name, df, pl_dir)
-            print(df.head())
+            print(df.tail())
             ## Save csv with img folder directory, image names, pl path and confidence
             df_csv_dir = os.path.join(pl_dir, "pl.csv")
             df.to_csv(df_csv_dir, index=False)  ## ./pseudo_label/model_1/pl.csv
