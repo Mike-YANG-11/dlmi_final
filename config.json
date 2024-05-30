@@ -67,6 +67,7 @@
         "retina_head" : false,
         "experiment_id" : "4",
         "visualize" : false,
+        "det_num_classes" : 2,
         "with_aqe" : false,
         "batch_size" : 8,
         "epochs" : 20,
