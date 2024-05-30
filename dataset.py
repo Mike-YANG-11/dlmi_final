@@ -18,11 +18,13 @@ from torchvision.transforms import v2
 from torchvision import tv_tensors
 
 import pandas as pd
+
 # from functools import lru_cache
+
 
 # Custom Dataset Class
 class CustomDataset(Dataset):
-    def __init__(self, dir_path, transform=None, time_window=3, line_width=20, b_thres=False):
+    def __init__(self, dir_path, transform=None, time_window=3, line_width=20, b_thres=False, det_num_classes=1):
         """
         Args:
             root (str): Path to the dataset directory.
@@ -61,10 +63,11 @@ class CustomDataset(Dataset):
             self.consec_json_names = [self.json_names[i : i + self.time_window] for i in range(0, len(self.json_names) - self.time_window + 1)]
         self.transform = transform
         self.trans_totensor = tf.Compose([tf.ToTensor()])
+        self.det_num_classes = det_num_classes
 
     def __len__(self):
         return len(self.consec_images_names)
-    
+
     # @lru_cache(256)
     def __getitem__(self, idx):
         consec_images_name = self.consec_images_names[idx]  # ["a0001.jpg", "a0002.jpg", "a0003.jpg"]
@@ -106,7 +109,7 @@ class CustomDataset(Dataset):
                     js["shapes"][1]["points"][1][1],
                 ]
                 # print('bbox', bbox, 'end', endpoint)
-                label = 0  ## TODO: other cls?
+                # label = 0  ## TODO: other cls?
             elif len(js["shapes"]) == 1:  ## annotated with needle
                 cal = [js["shapes"][0]["center"][0], js["shapes"][0]["center"][1], js["shapes"][0]["theta"], js["shapes"][0]["length"]]
                 endpoint = [
@@ -115,19 +118,19 @@ class CustomDataset(Dataset):
                     js["shapes"][0]["points"][1][0],
                     js["shapes"][0]["points"][1][1],
                 ]
-                label = 0
+                # label = 0
             else:  ## no needle
                 cal = [0, 0, 0, 0]
                 endpoint = [0, 0, 0, 0]
-                label = -1
+                # label = -1
             consec_cals.append(torch.as_tensor(cal, dtype=torch.float32))
             # consec_endpoints.append(tv_tensors.BoundingBoxes(endpoint, format="XYXY", canvas_size=[1758,1758]) )
             consec_endpoints.append(torch.as_tensor(endpoint, dtype=torch.float32))
-            consec_labels.append(torch.as_tensor(label, dtype=torch.float32))
+            # consec_labels.append(torch.as_tensor(label, dtype=torch.float32))
             f.close()
         consec_cals = torch.stack(consec_cals, dim=0)  ## [T, 4]
         consec_endpoints = torch.stack(consec_endpoints, dim=0)  ## [T, 4]
-        consec_labels = torch.stack(consec_labels, dim=0).long()  ## [T,]
+        # consec_labels = torch.stack(consec_labels, dim=0).long()  ## [T,]
 
         # Unsqueeze
         consec_images = consec_images.unsqueeze(1)  # [T, 1, H, W]
@@ -137,15 +140,19 @@ class CustomDataset(Dataset):
         if self.transform:
             consec_images, consec_masks, consec_endpoints, consec_cals = self.transform(consec_images, consec_masks, consec_endpoints, consec_cals)
 
-        # # Assign labels based on the orientation of the needle
-        # for t in range(consec_endpoints.shape[0]):
-        #     if consec_endpoints[t, :].sum() == 0:
-        #         consec_labels.append(torch.as_tensor(-1, dtype=torch.float32))  ## cls_id = -1: no needle
-        #     elif torch.sign(consec_endpoints[t][0] - consec_endpoints[t][2]) == torch.sign(consec_endpoints[t][1] - consec_endpoints[t][3]):
-        #         consec_labels.append(torch.as_tensor(0, dtype=torch.float32))  ## cls_id = 0: left-top to right-bottom
-        #     else:
-        #         consec_labels.append(torch.as_tensor(1, dtype=torch.float32))  ## cls_id = 1: right-top to left-bottom
-        # consec_labels = torch.stack(consec_labels, dim=0).long()  ## [T,]
+        # Assign labels based on the orientation of the needle
+        for t in range(consec_endpoints.shape[0]):
+            if consec_endpoints[t, :].sum() == 0:
+                consec_labels.append(torch.as_tensor(-1, dtype=torch.float32))  ## cls_id = -1: no needle
+            else:
+                if self.det_num_classes == 1:  ## 1 class for with needle or not
+                    consec_labels.append(torch.as_tensor(0, dtype=torch.float32))  ## cls_id = 0: with needle
+                else:  ## 2 classes for needles with different directions
+                    if torch.sign(consec_endpoints[t][0] - consec_endpoints[t][2]) == torch.sign(consec_endpoints[t][1] - consec_endpoints[t][3]):
+                        consec_labels.append(torch.as_tensor(0, dtype=torch.float32))  ## cls_id = 0: left-top to right-bottom needle
+                    else:
+                        consec_labels.append(torch.as_tensor(1, dtype=torch.float32))  ## cls_id = 1: right-top to left-bottom needle
+        consec_labels = torch.stack(consec_labels, dim=0).long()  ## [T,]
 
         # Squeeze
         consec_images = consec_images.squeeze(1)  # [T, H, W]
@@ -156,10 +163,11 @@ class CustomDataset(Dataset):
             "masks": consec_masks,
             "cals": consec_cals,  ## center, angle, length (x2, y2, angle, length)
             "endpoints": consec_endpoints,  ## (x1, y1, x3, y3) tensor, not tv_tensors.BoundingBoxes)
-            "labels": consec_labels,  ## cls_id = -1: no needle, 0: with needle
+            "labels": consec_labels,  ## cls_id = -1: no needle, 0: left-top to right-bottom, 1: right-top to left-bottom
             "img_path": fname_list,  ## (path_t1, path_t2, path_t3)
         }
         return sample
+
 
 # Augmentation Class
 class Augmentation(nn.Module):
@@ -240,6 +248,7 @@ class Augmentation(nn.Module):
 
         return images, masks, endpoints, cals
 
+
 # Augmentation Class if no detection head
 class AugmentationImgMaskOnly(nn.Module):
     def __init__(self, resized_crop=True, color_jitter=True, horizontal_flip=True, image_size=224):
@@ -248,8 +257,8 @@ class AugmentationImgMaskOnly(nn.Module):
         self.horizontal_flip = horizontal_flip
         self.image_size = image_size
 
-    def __call__(self, images, masks): 
-        
+    def __call__(self, images, masks):
+
         masks = v2.functional.resize(masks, (images.shape[-2], images.shape[-1]), interpolation=tf.InterpolationMode.NEAREST)
         """ Random Resized Crop """
         if self.resized_crop and random.random() < 0.5:
@@ -262,7 +271,7 @@ class AugmentationImgMaskOnly(nn.Module):
             # Apply Crop
             images = images[:, :, top : top + height, left : left + width]  ## (... ,Y1:Y2 , X1:X2)
             masks = masks[:, :, top : top + height, left : left + width]
-            
+
         """Resize"""  ## do not resize at the begining to avoid distortion
         images = v2.functional.resize(images, (self.image_size, self.image_size), interpolation=tf.InterpolationMode.BILINEAR, antialias=True)
         masks = v2.functional.resize(masks, (self.image_size, self.image_size), interpolation=tf.InterpolationMode.NEAREST)
@@ -283,7 +292,10 @@ class AugmentationImgMaskOnly(nn.Module):
 
         return images, masks
 
+
 """For Semi Supervise Pseudo Labeling"""
+
+
 class UnlabeledDataset(Dataset):
     def __init__(self, dir_path, transform=None, time_window=3):
         """
@@ -324,27 +336,28 @@ class UnlabeledDataset(Dataset):
         # Unsqueeze
         consec_images = consec_images.unsqueeze(1)  # [T, 1, H, W]
 
-        # Apply transform 
+        # Apply transform
         consec_masks = torch.zeros_like(consec_images)
-        consec_endpoints, consec_bboxes =  torch.zeros([3,4]),  torch.zeros([3,4])
+        consec_endpoints, consec_bboxes = torch.zeros([3, 4]), torch.zeros([3, 4])
         if self.transform:
             consec_images, _, _, _ = self.transform(consec_images, consec_masks, consec_endpoints, consec_bboxes)
-        
+
         # Squeeze
         consec_images = consec_images.squeeze(1)  # [T, H, W]
 
         sample = {
             "images": consec_images,
             "img_names": " ".join(consec_images_name),  ## "a0000.jpg a0001.jpg a0002.jpg"
-            "img_folder_dir": self.dir_path    ## folder directory of images
+            "img_folder_dir": self.dir_path,  ## folder directory of images
         }
         return sample
 
+
 class PseudoDataset(Dataset):
-    def __init__(self, csv_dir = None, transform=None, time_window=3):
+    def __init__(self, csv_dir=None, transform=None, time_window=3):
         """
         Args:
-            csv_dir (str): The csv that updates image, mask path and confidence, 
+            csv_dir (str): The csv that updates image, mask path and confidence,
                             with columns <img_root> <img_names> <mask_path> <confidence>.
             transform (callable, optional): Optional transform to be applied on a sample.
 
@@ -361,24 +374,24 @@ class PseudoDataset(Dataset):
 
     def __len__(self):
         return len(self.consec_images_names)
-    
+
     def update_df_from_csv(self):
         self.df = pd.read_csv(self.csv_dir)
-        self.img_roots = self.df['img_root'].tolist()
-        self.image_names = self.df['img_names'].tolist()
-        self.mask_paths = self.df['mask_path'].tolist()
+        self.img_roots = self.df["img_root"].tolist()
+        self.image_names = self.df["img_names"].tolist()
+        self.mask_paths = self.df["mask_path"].tolist()
         # self.json_names = [f.replace(".png", ".json") for f in self.mask_names]   ### Note: assume same name with mask
-        self.pl_confidence = self.df['confidence'].tolist()
+        self.pl_confidence = self.df["confidence"].tolist()
 
         # creat T consecutive image & mask & json names list
         self.consec_images_names = [names.split(" ") for names in self.image_names]
-          # [["a0001.jpg", "a0002.jpg", "a0003.jpg"], ["a0002.jpg", "a0003.jpg", "a0004.jpg"], ...]
+        # [["a0001.jpg", "a0002.jpg", "a0003.jpg"], ["a0002.jpg", "a0003.jpg", "a0004.jpg"], ...]
         self.consec_masks_names = [
             [self.mask_paths[i]] * 3 for i in range(0, len(self.mask_paths))
         ]  # [["root/m0001_pl.png", "root/m0002_pl.png", "root/m0003_pl.png"], ["root/m0002_pl.png", "root/m0003_pl.png", "root/m0004_pl.png"], ...]
         # self.consec_json_names = [[self.json_names[i]] * 3 for i in range(0, len(self.json_names))]
         #   ## [["m0001_pl.json", "m0002_pl.json", "m0003_pl.json"], ["m0002_pl.json", "m0003_pl.json", "m0004_pl.json"], ...]
-        
+
         return
 
     def __getitem__(self, idx):
@@ -396,7 +409,7 @@ class PseudoDataset(Dataset):
         consec_masks_name = self.consec_masks_names[idx]  # ["root/m0001_pl.png", "root/m0001_pl.png", "root/m0001_pl.png"]
         consec_masks = []
         for f_name in consec_masks_name:
-            img = Image.open( f_name).convert("L")
+            img = Image.open(f_name).convert("L")
             img_tensor = self.trans_totensor(img)
             consec_masks.append(img_tensor)
             img.close()
@@ -435,15 +448,13 @@ class PseudoDataset(Dataset):
         # Unsqueeze
         consec_images = consec_images.unsqueeze(1)  # [T, 1, H, W]
         consec_masks = consec_masks.unsqueeze(1)  # [T, 1, H, W]
-        
+
         # consec_endpoints = torch.zeros([self.time_window, 4])
         # consec_cals = torch.zeros([self.time_window, 4])
 
         # Apply transform
         if self.transform:
             consec_images, consec_masks = self.transform(consec_images, consec_masks)
-        
-           
 
         # # Assign labels based on the orientation of the needle
         # for t in range(consec_endpoints.shape[0]):
@@ -462,8 +473,8 @@ class PseudoDataset(Dataset):
         sample = {
             "images": consec_images,
             "masks": consec_masks,
-            "cals": torch.tensor([-1,-1,-1,-1]),   ## center, angle, length (x2, y2, angle, length)
-            "endpoints": torch.tensor([-1,-1,-1,-1]),  ## (x1, y1, x3, y3) tensor, not tv_tensors.BoundingBoxes)
+            "cals": torch.tensor([-1, -1, -1, -1]),  ## center, angle, length (x2, y2, angle, length)
+            "endpoints": torch.tensor([-1, -1, -1, -1]),  ## (x1, y1, x3, y3) tensor, not tv_tensors.BoundingBoxes)
             "labels": -2,  ## cls_id = -1: no needle, 0: left-top to right-bottom, 1: right-top to left-bottom
             "img_path": fname_list,  ## (path_t1, path_t2, path_t3)
         }

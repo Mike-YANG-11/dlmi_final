@@ -308,7 +308,7 @@ def det_line_evaluate(
         annotation = annotation.squeeze(0)  # [5]
 
         # get the top-1 detection endpoints
-        _, topk_endpoints, _ = detect_postprocessing(
+        _, _, topk_endpoints, _ = detect_postprocessing(
             pred_cls,
             pred_reg,
             anchors_pos,
