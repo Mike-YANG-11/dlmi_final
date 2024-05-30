@@ -409,24 +409,25 @@ class DetLoss(nn.Module):
             if positive_indices.sum() > 0:
                 assigned_annotations = assigned_annotations[positive_indices, :]
 
+                # anchors with positive cls labels
+                anchors_ctr_x_posit = anchors_ctr_x[positive_indices]
+                anchors_ctr_y_posit = anchors_ctr_y[positive_indices]
+                anchors_width_posit = anchors_width[positive_indices]
+                anchors_height_posit = anchors_height[positive_indices]
+                anchors_length_posit = anchors_length[positive_indices]
+
+                # ground truth center, angle, length
+                gt_ctr_x = assigned_annotations[:, 0]
+                gt_ctr_y = assigned_annotations[:, 1]
+                gt_theta = assigned_annotations[:, 2]
+                gt_length = assigned_annotations[:, 3]
+
+                # clip the length to avoid 0 or negative values
+                gt_length = torch.clamp(gt_length, min=1)
+
                 # -------------------------------------------------------------------------------
                 # EAL regression loss calculation using center, angle, length
                 if self.aqe_loss is None:
-                    anchors_ctr_x_posit = anchors_ctr_x[positive_indices]
-                    anchors_ctr_y_posit = anchors_ctr_y[positive_indices]
-                    anchors_width_posit = anchors_width[positive_indices]
-                    anchors_height_posit = anchors_height[positive_indices]
-                    anchors_length_posit = anchors_length[positive_indices]
-
-                    gt_ctr_x = assigned_annotations[:, 0]
-                    gt_ctr_y = assigned_annotations[:, 1]
-                    gt_theta = assigned_annotations[:, 2]
-                    gt_length = assigned_annotations[:, 3]
-
-                    # clip the length to avoid 0 or negative values
-                    gt_length = torch.clamp(gt_length, min=1)
-
-                    """ Design the regression for center, angle, length """
                     # regression targets
                     targets_dx = (gt_ctr_x - anchors_ctr_x_posit) / anchors_width_posit
                     targets_dy = (gt_ctr_y - anchors_ctr_y_posit) / anchors_height_posit
@@ -442,7 +443,7 @@ class DetLoss(nn.Module):
                     regression_dx_diff = torch.abs(targets_dx - regression[positive_indices, 0])
                     regression_dy_diff = torch.abs(targets_dy - regression[positive_indices, 1])
                     # regression_theta_diff = torch.abs(torch.sin(targets_theta - regression[positive_indices, 2]))  ## TODO: is sin still necessary?
-                    regression_theta_diff = torch.abs(targets_theta - regression[positive_indices, 2])  ## TODO: is sin still necessary?
+                    regression_theta_diff = torch.abs(targets_theta - regression[positive_indices, 2])  ## without sin
                     regression_dl_diff = torch.abs(targets_dl - regression[positive_indices, 3])
 
                     # smooth L1 loss (less sensitive to outliers, prevents exploding gradients)
@@ -458,8 +459,8 @@ class DetLoss(nn.Module):
                     regression_dl_loss = torch.where(
                         torch.le(regression_dl_diff, 1.0), 0.5 * torch.pow(regression_dl_diff, 2), regression_dl_diff - 0.5
                     )
-                    """ End of design """
 
+                    # loss scaling
                     reg_loss_weight = 5
                     reg_loss = reg_loss_weight * (regression_dx_loss + regression_dy_loss + regression_theta_loss + regression_dl_loss)
 
@@ -468,21 +469,6 @@ class DetLoss(nn.Module):
                 # -------------------------------------------------------------------------------
                 # AQE regression loss calculation using center, angle, sigma, length
                 if self.aqe_loss is not None:
-                    anchors_ctr_x_posit = anchors_ctr_x[positive_indices]
-                    anchors_ctr_y_posit = anchors_ctr_y[positive_indices]
-                    anchors_width_posit = anchors_width[positive_indices]
-                    anchors_height_posit = anchors_height[positive_indices]
-                    anchors_length_posit = anchors_length[positive_indices]
-
-                    gt_ctr_x = assigned_annotations[:, 0]
-                    gt_ctr_y = assigned_annotations[:, 1]
-                    gt_theta = assigned_annotations[:, 2]
-                    gt_length = assigned_annotations[:, 3]
-
-                    # clip the length to avoid 0 or negative values
-                    gt_length = torch.clamp(gt_length, min=1)
-
-                    """ Design the regression for center, length """
                     # regression targets
                     targets_dx = (gt_ctr_x - anchors_ctr_x_posit) / anchors_width_posit
                     targets_dy = (gt_ctr_y - anchors_ctr_y_posit) / anchors_height_posit
@@ -508,9 +494,8 @@ class DetLoss(nn.Module):
                     regression_dl_loss = torch.where(
                         torch.le(regression_dl_diff, 1.0), 0.5 * torch.pow(regression_dl_diff, 2), regression_dl_diff - 0.5
                     )
-                    """ End of design """
 
-                    """ Design the regression for angle quality estimation """
+                    # get the predicted angle and sigma
                     pred_theta = regression[positive_indices, 2]
                     pred_sigma = regression[positive_indices, 3]
 
@@ -523,6 +508,7 @@ class DetLoss(nn.Module):
                     # print(f"regression_dl_loss {regression_dl_loss.mean()}")
                     # print("---------------------------------------")
 
+                    # loss scaling
                     reg_loss_weight = 5
                     reg_loss = reg_loss_weight * (regression_dx_loss + regression_dy_loss + regression_theta_loss + regression_dl_loss)
                 # -------------------------------------------------------------------------------
