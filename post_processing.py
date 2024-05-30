@@ -42,6 +42,7 @@ def detect_postprocessing(pred_cls, pred_reg, anchors_pos, image_width, image_he
 
     # get top-k anchors with the highest scores
     topk_score, topk_idx = torch.topk(score, k=topk, dim=-1)  # both [k,]
+    topk_id = cls_id[topk_idx]  # [k,]
 
     # get the top-k anchor positions
     topk_anchors_pos = anchors_pos[topk_idx]  # [k, 5]
@@ -114,4 +115,4 @@ def detect_postprocessing(pred_cls, pred_reg, anchors_pos, image_width, image_he
             endpoints = [endpoints[0][0], endpoints[0][1], endpoints[1][0], endpoints[1][1]]  # [4,]
             topk_endpoints[k] = torch.tensor(endpoints, dtype=torch.float32)  # [4,]
 
-    return topk_score, topk_endpoints, topk_pred_cals
+    return topk_score, topk_id, topk_endpoints, topk_pred_cals

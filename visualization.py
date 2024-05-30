@@ -168,7 +168,7 @@ def show_preds_with_det_head(
                 vis_pred_mask = cv2.cvtColor(vis_pred_mask, cv2.COLOR_GRAY2BGR)
 
                 # get the top-k detection endpoints
-                topk_score, topk_endpoints, topk_pred_cals = detect_postprocessing(
+                topk_score, topk_id, topk_endpoints, topk_pred_cals = detect_postprocessing(
                     pred_cls,
                     pred_reg,
                     anchors_pos,
@@ -190,6 +190,7 @@ def show_preds_with_det_head(
                     if not (x1 == x2 and y1 == y2):
                         vis_pred_mask = cv2.line(vis_pred_mask, (x1, y1), (x2, y2), color, 5)
                 print(f"top-k score: {topk_score}")
+                print(f"top-k id: {topk_id}")
                 print(f"top-k endpoints: {topk_endpoints}")
                 print(f"top-k pred cals: {topk_pred_cals}")
 
