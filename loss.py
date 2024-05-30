@@ -319,7 +319,7 @@ class DetLoss(nn.Module):
 
         for idx in range(batch_size):
             classification = classifications[idx, :, :]  # shape (num_total_anchors, num_classes)
-            regression = regressions[idx, :, :]  # shape (num_total_anchors, 4)
+            regression = regressions[idx, :, :]  # shape (num_total_anchors, 4 or 5)
             annotation = annotations[idx, :, :]  # shape (num_annotations, 5)
 
             # remove the annotations with cls_id = -1 (background class)
@@ -442,8 +442,8 @@ class DetLoss(nn.Module):
                     # difference between the targets and the regression values
                     regression_dx_diff = torch.abs(targets_dx - regression[positive_indices, 0])
                     regression_dy_diff = torch.abs(targets_dy - regression[positive_indices, 1])
-                    # regression_theta_diff = torch.abs(torch.sin(targets_theta - regression[positive_indices, 2]))  ## TODO: is sin still necessary?
-                    regression_theta_diff = torch.abs(targets_theta - regression[positive_indices, 2])  ## without sin
+                    regression_theta_diff = torch.abs(torch.sin(targets_theta - regression[positive_indices, 2]))  ## (experiment_id = 3)
+                    # regression_theta_diff = torch.abs(targets_theta - regression[positive_indices, 2])  ## without sin (experiment_id = 5)
                     regression_dl_diff = torch.abs(targets_dl - regression[positive_indices, 3])
 
                     # smooth L1 loss (less sensitive to outliers, prevents exploding gradients)
