@@ -25,7 +25,7 @@ from tqdm import tqdm
 
 from dataset import CustomDataset, Augmentation, UnlabeledDataset, PseudoDataset, AugmentationImgMaskOnly
 from evaluation import evaluate, seg_dice_score, seg_iou_score, results_dictioanry
-from visualization import show_dataset_samples, show_seg_preds_only
+from visualization import show_dataset_samples, show_seg_preds_only, show_preds_with_det_head
 from model import VideoUnetr, VideoRetinaUnetr
 from loss import SegFocalLoss, SegDiceLoss, SegFocalTverskyLoss, SegIoULoss, DetLoss, SIoULoss, AQELoss
 from pseudolabel import generate_pl
@@ -37,6 +37,7 @@ def construct_datasets(config):
     batch_size = config["Train"]["batch_size"]
     t = config["Model"]["time_window"]
     line_width = config["Data"]["line_width"]
+    det_num_classes = config["Train"]["det_num_classes"]
 
     train_transform = Augmentation(resized_crop=True, color_jitter=True, horizontal_flip=True, image_size=image_size)
     valid_transform = Augmentation(resized_crop=False, color_jitter=False, horizontal_flip=False, image_size=image_size)
@@ -44,28 +45,44 @@ def construct_datasets(config):
     train_dataset_list = []
     for folder_name in config["Data"]["Train_folder"].values():
         subdataset = CustomDataset(
-            os.path.join(config["Data"]["folder_dir"], folder_name), transform=train_transform, time_window=t, line_width=line_width
+            os.path.join(config["Data"]["folder_dir"], folder_name),
+            transform=train_transform,
+            time_window=t,
+            line_width=line_width,
+            det_num_classes=det_num_classes,
         )
         train_dataset_list.append(subdataset)
 
     valid_dataset_list = []
     for folder_name in config["Data"]["Val_folder"].values():
         subdataset = CustomDataset(
-            os.path.join(config["Data"]["folder_dir"], folder_name), transform=valid_transform, time_window=t, line_width=line_width
+            os.path.join(config["Data"]["folder_dir"], folder_name),
+            transform=valid_transform,
+            time_window=t,
+            line_width=line_width,
+            det_num_classes=det_num_classes,
         )
         valid_dataset_list.append(subdataset)
 
     test_med_dataset_list = []
     for folder_name in config["Data"]["Test_folder"]["Medium"].values():
         subdataset = CustomDataset(
-            os.path.join(config["Data"]["folder_dir"], folder_name), transform=valid_transform, time_window=t, line_width=line_width
+            os.path.join(config["Data"]["folder_dir"], folder_name),
+            transform=valid_transform,
+            time_window=t,
+            line_width=line_width,
+            det_num_classes=det_num_classes,
         )
         test_med_dataset_list.append(subdataset)
 
     test_hard_dataset_list = []
     for folder_name in config["Data"]["Test_folder"]["Hard"].values():
         subdataset = CustomDataset(
-            os.path.join(config["Data"]["folder_dir"], folder_name), transform=valid_transform, time_window=t, line_width=line_width
+            os.path.join(config["Data"]["folder_dir"], folder_name),
+            transform=valid_transform,
+            time_window=t,
+            line_width=line_width,
+            det_num_classes=det_num_classes,
         )
         test_hard_dataset_list.append(subdataset)
 
@@ -156,7 +173,7 @@ def train(
                 pred_masks = model(images)  # [N, 1, H, W]
 
             # Calculate loss (use the last frame as the target mask)
-            # fl = seg_focal_loss(pred_masks, masks, ignore_index=ignore_index)
+            fl = seg_focal_loss(pred_masks, masks, ignore_index=ignore_index)
             dl = seg_dice_loss(pred_masks, masks, ignore_index=ignore_index)
             # ftl = seg_ft_loss(pred_masks, masks)
             # il = seg_iou_loss(pred_masks, masks)
@@ -164,7 +181,7 @@ def train(
                 cl, rl = det_loss(pred_classifications, pred_regressions, anchors_pos, annotations)
 
             # Calculate total loss
-            loss = dl  # +  fl #+ il+  fl  #  ftl
+            loss = dl + fl  # + il+  fl  #  ftl
             if model_name == "Video-Retina-UNETR" and train_det_head:  # with the detection head
                 loss = loss + cl + rl  ## TODO: adaptively modify the weight for the detection loss
 
@@ -173,8 +190,8 @@ def train(
             seg_iscore = seg_iou_score(pred_masks, masks)
 
             # update running loss & score
-            running_results["Loss"] += dl.item()  # + fl.item()
-            running_results["Segmentation Focal Loss"] += 0  # fl.item()
+            running_results["Loss"] += dl.item() + fl.item()
+            running_results["Segmentation Focal Loss"] += fl.item()
             running_results["Segmentation Dice Loss"] += dl.item()
             running_results["Segmentation Dice Score"] += seg_dscore.item()
             running_results["Segmentation IoU Score"] += seg_iscore.item()
@@ -196,7 +213,7 @@ def train(
 
         return running_results
 
-    def visualize_sample(model, loader):
+    def visualize_sample(model, loader, model_name, anchors_pos=None):
         with torch.no_grad():
             for _, vis_samples in enumerate(loader):
                 # Move to device & forward pass
@@ -213,9 +230,27 @@ def train(
                 # Detach and move to CPU
                 vis_images = vis_images.detach().cpu()
                 vis_pred_masks = vis_pred_masks.detach().cpu()
+                if model_name == "Video-Retina-UNETR":
+                    vis_classifications = vis_classifications.detach().cpu()  # [N, num_total_anchors, num_classes]
+                    vis_regressions = vis_regressions.detach().cpu()  # [N, num_total_anchors, 4]
+                    anchors_pos = anchors_pos.detach().cpu()  # [num_total_anchors, 4]
 
                 # Visualize the output
-                show_seg_preds_only(consec_images=vis_images, consec_masks=vis_masks, preds=vis_pred_masks)
+                if model_name == "Video-Retina-UNETR":
+                    show_preds_with_det_head(
+                        vis_images,
+                        vis_masks,
+                        vis_pred_masks,
+                        vis_classifications,
+                        vis_regressions,
+                        anchors_pos,
+                        topk=1,
+                        with_aqe=config["Train"]["with_aqe"],
+                    )
+                    anchors_pos = anchors_pos.cuda()
+                else:
+                    show_seg_preds_only(consec_images=vis_images, consec_masks=vis_masks, pred_masks=vis_pred_masks)
+
                 break
 
     epochs = config["Train"]["epochs"]
@@ -305,10 +340,8 @@ def train(
             or val_results["Segmentation Needle EA Score"] > best_val_results["Segmentation Needle EA Score"]
             or val_results["Segmentation Needle EAL Score"] > best_val_results["Segmentation Needle EAL Score"]
         ):
-            # Update the best validation loss & IoU score
+            # Update the best validation loss & IoU score and reset early stopping count
             best_val_results = val_results
-
-            # Reset early stopping count
             early_stop_count = 0
 
             # Save the best model
@@ -319,16 +352,23 @@ def train(
             torch.save(model.state_dict(), save_path)
             print("The best model is saved!")
 
+            # Visualize the output
             if visualize:
                 model.eval()
 
                 # Visualize the output on training data (show the first batch)
                 print("Visualizing the output on training data...")
-                visualize_sample(model, loader=train_loader)
+                if model_name == "Video-Retina-UNETR":
+                    visualize_sample(model, loader=train_loader, model_name=model_name, anchors_pos=anchors_pos)
+                else:
+                    visualize_sample(model, loader=train_loader, model_name=model_name)
 
                 # Visualize the output on validation data (show the first batch)
                 print("Visualizing the output on validation data...")
-                visualize_sample(model, loader=valid_loader)
+                if model_name == "Video-Retina-UNETR":
+                    visualize_sample(model, loader=valid_loader, model_name=model_name, anchors_pos=anchors_pos)
+                else:
+                    visualize_sample(model, loader=valid_loader, model_name=model_name)
         else:
             early_stop_count += 1
             if early_stop_count == 5:
@@ -458,32 +498,19 @@ def main(config):
             out_chans=1,
         )
     elif model_name == "Video-Retina-UNETR":
-        if config["Train"]["with_aqe"]:
-            model = VideoRetinaUnetr(
-                img_size=config["Model"]["image_size"],
-                patch_size=config["Model"]["patch_size"],
-                embed_dim=config["Model"]["embed_dim"],
-                depth=config["Model"]["depth"],
-                num_heads=config["Model"]["num_heads"],
-                mlp_ratio=config["Model"]["mlp_ratio"],
-                norm_layer=partial(nn.LayerNorm, eps=1e-6),
-                skip_chans=config["Model"]["skip_chans"],
-                out_chans=1,
-                det_with_aqe=True,
-            )
-        else:
-            model = VideoRetinaUnetr(
-                img_size=config["Model"]["image_size"],
-                patch_size=config["Model"]["patch_size"],
-                embed_dim=config["Model"]["embed_dim"],
-                depth=config["Model"]["depth"],
-                num_heads=config["Model"]["num_heads"],
-                mlp_ratio=config["Model"]["mlp_ratio"],
-                norm_layer=partial(nn.LayerNorm, eps=1e-6),
-                skip_chans=config["Model"]["skip_chans"],
-                out_chans=1,
-                det_with_aqe=False,
-            )
+        model = VideoRetinaUnetr(
+            img_size=config["Model"]["image_size"],
+            patch_size=config["Model"]["patch_size"],
+            embed_dim=config["Model"]["embed_dim"],
+            depth=config["Model"]["depth"],
+            num_heads=config["Model"]["num_heads"],
+            mlp_ratio=config["Model"]["mlp_ratio"],
+            norm_layer=partial(nn.LayerNorm, eps=1e-6),
+            skip_chans=config["Model"]["skip_chans"],
+            out_chans=1,
+            det_num_classes=config["Train"]["det_num_classes"],
+            det_with_aqe=config["Train"]["with_aqe"],
+        )
 
     # load pretrained ViT weights
     vit_pretrained_weights = "MAE ImageNet 1k"
@@ -582,8 +609,9 @@ def main(config):
             "Base Learning Rate": config["Train"]["blr"],
             "Learning Rate Scheduler": "Linear Decay",
             "Optimizer": "AdamW",
+            "Detection Needle Classes": config["Train"]["det_num_classes"],
             "Theta Regression Reference": "Horizontal Orientation",
-            "Angle Quantization Estimation": config["Train"]["with_aqe"],
+            "Angle Quality Estimation": config["Train"]["with_aqe"],
             "Loss Functions": config["Train"]["loss"],  # dice + focal + cls_focal + reg_l1,
             "PL_model_thres": model_thres,
             "PL_thres": pl_thres,
