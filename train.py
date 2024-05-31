@@ -173,7 +173,7 @@ def train(
                 pred_masks = model(images)  # [N, 1, H, W]
 
             # Calculate loss (use the last frame as the target mask)
-            # fl = seg_focal_loss(pred_masks, masks, ignore_index=ignore_index)
+            fl = seg_focal_loss(pred_masks, masks, ignore_index=ignore_index)
             dl = seg_dice_loss(pred_masks, masks, ignore_index=ignore_index)
             # ftl = seg_ft_loss(pred_masks, masks)
             # il = seg_iou_loss(pred_masks, masks)
@@ -181,7 +181,7 @@ def train(
                 cl, rl = det_loss(pred_classifications, pred_regressions, anchors_pos, annotations)
 
             # Calculate total loss
-            loss = dl  # +  fl #+ il+  fl  #  ftl
+            loss = dl + fl  # + il+  fl  #  ftl
             if model_name == "Video-Retina-UNETR" and train_det_head:  # with the detection head
                 loss = loss + cl + rl  ## TODO: adaptively modify the weight for the detection loss
 
@@ -190,8 +190,8 @@ def train(
             seg_iscore = seg_iou_score(pred_masks, masks)
 
             # update running loss & score
-            running_results["Loss"] += dl.item()  # +fl.item()
-            running_results["Segmentation Focal Loss"] += 0  # fl.item()
+            running_results["Loss"] += dl.item() + fl.item()
+            running_results["Segmentation Focal Loss"] += fl.item()
             running_results["Segmentation Dice Loss"] += dl.item()
             running_results["Segmentation Dice Score"] += seg_dscore.item()
             running_results["Segmentation IoU Score"] += seg_iscore.item()
@@ -565,10 +565,9 @@ def main(config):
     seg_ft_loss = SegFocalTverskyLoss().to(device)
     seg_iou_loss = SegIoULoss().to(device)
     if model_name == "Video-Retina-UNETR":
-        if config["Train"]["with_aqe"]:
-            det_loss = DetLoss(alpha=0.25, gamma=2.0, siou_loss=SIoULoss(), aqe_loss=AQELoss()).to(device)
-        else:
-            det_loss = DetLoss(alpha=0.25, gamma=2.0, siou_loss=SIoULoss()).to(device)
+        siou_loss = SIoULoss() if config["Train"]["siou_loss"] else None
+        aqe_loss = AQELoss() if config["Train"]["with_aqe"] else None
+        det_loss = DetLoss(siou_loss=siou_loss, aqe_loss=aqe_loss).to(device)
     else:
         det_loss = None
 

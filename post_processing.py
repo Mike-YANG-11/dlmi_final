@@ -33,12 +33,12 @@ def detect_postprocessing(pred_cls, pred_reg, anchors_pos, image_width, image_he
     pred_reg[:, 3] = torch.where(conf >= conf_thresh, pred_reg[:, 3], torch.zeros_like(pred_reg[:, 3]))
 
     # get the score for each anchor
-    if with_aqe:
+    if not with_aqe:
+        score = conf
+    else:
         # combine the confidence score and angle quality score
         aq = 1 - pred_reg[:, 3]  # [num_total_anchors,]
         score = factor * conf + (1 - factor) * aq  # [num_total_anchors,]
-    else:
-        score = conf
 
     # get top-k anchors with the highest scores
     topk_score, topk_idx = torch.topk(score, k=topk, dim=-1)  # both [k,]
@@ -63,29 +63,27 @@ def detect_postprocessing(pred_cls, pred_reg, anchors_pos, image_width, image_he
     topk_anchors_length = torch.sqrt(torch.pow(x2 - x1, 2) + torch.pow(y2 - y1, 2))
 
     # -------------------------------------------------------------------------------
-    # smooth L1 loss regression method
     # remember to modify the following code to get the predicted center, angle, length when the regression targets are modified !!!!!
     # get the predicted center, angle, length of each anchor
 
     # rescale the regression targets due to target scaling in loss calculation
-    pred_reg[topk_idx, 0] = pred_reg[topk_idx, 0] / 2  # center x
-    pred_reg[topk_idx, 1] = pred_reg[topk_idx, 1] / 2  # center y
-    if with_aqe:
-        pred_reg[topk_idx, 4] = pred_reg[topk_idx, 4] / 2  # length
+    target_scale = 0.5
+    pred_reg[topk_idx, 0] = pred_reg[topk_idx, 0] * target_scale  # center x
+    pred_reg[topk_idx, 1] = pred_reg[topk_idx, 1] * target_scale  # center y
+    if not with_aqe:
+        pred_reg[topk_idx, 3] = pred_reg[topk_idx, 3] * target_scale  # length
     else:
-        pred_reg[topk_idx, 3] = pred_reg[topk_idx, 3] / 2  # length
+        pred_reg[topk_idx, 4] = pred_reg[topk_idx, 4] * target_scale  # length
 
     # get the predicted center, angle, length for the top-k anchors
     topk_pred_ctr_x = pred_reg[topk_idx, 0] * topk_anchors_width + topk_anchors_ctr_x  # [k,]
     topk_pred_ctr_y = pred_reg[topk_idx, 1] * topk_anchors_height + topk_anchors_ctr_y  # [k,]
     topk_pred_theta = pred_reg[topk_idx, 2]  # [k,]
-    if with_aqe:
-        topk_pred_sigma = pred_reg[topk_idx, 3]  # [k,]
-        # print(f"sigmas of top-k anchors: {topk_pred_sigma}")
-        topk_pred_length = torch.exp(pred_reg[topk_idx, 4]) * topk_anchors_length  # [k,]
-    else:
+    if not with_aqe:
         topk_pred_length = torch.exp(pred_reg[topk_idx, 3]) * topk_anchors_length
-    # print(f"conf of top-k anchors: {conf[topk_idx]}")
+    else:
+        topk_pred_sigma = pred_reg[topk_idx, 3]  # [k,]
+        topk_pred_length = torch.exp(pred_reg[topk_idx, 4]) * topk_anchors_length  # [k,]
 
     # concate the predicted center, angle, length
     topk_pred_cals = torch.stack([topk_pred_ctr_x, topk_pred_ctr_y, topk_pred_theta, topk_pred_length], dim=-1)  # [k, 4]
