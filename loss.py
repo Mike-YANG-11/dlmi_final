@@ -404,7 +404,7 @@ class DetLoss(nn.Module):
             # append classification loss to the list
             classification_losses.append(focal_loss.sum() / torch.clamp(num_positive_anchors.float(), min=1.0))
 
-            """ compute the loss for regression """
+            """ compute the loss for center, angle, length regression """
 
             if positive_indices.sum() > 0:
                 assigned_annotations = assigned_annotations[positive_indices, :]
@@ -416,35 +416,40 @@ class DetLoss(nn.Module):
                 anchors_height_posit = anchors_height[positive_indices]
                 anchors_length_posit = anchors_length[positive_indices]
 
-                # ground truth center, angle, length
-                gt_ctr_x = assigned_annotations[:, 0]
-                gt_ctr_y = assigned_annotations[:, 1]
-                gt_theta = assigned_annotations[:, 2]
-                gt_length = assigned_annotations[:, 3]
+                # rescale the regression target for better convergence
+                target_scale = 0.5  # Note: if modified, the post_processing.py should be modified accordingly!!!
 
-                # clip the length to avoid 0 or negative values
-                gt_length = torch.clamp(gt_length, min=1)
+                if self.siou_loss is None:
+                    # -------------------------------------------------------------------------------
+                    # smooth L1 loss with center, angle, length
+                    # -------------------------------------------------------------------------------
+                    # ground truth center, angle, length
+                    gt_ctr_x = assigned_annotations[:, 0]
+                    gt_ctr_y = assigned_annotations[:, 1]
+                    gt_theta = assigned_annotations[:, 2]
+                    gt_length = assigned_annotations[:, 3]
 
-                # -------------------------------------------------------------------------------
-                # EAL regression loss calculation using center, angle, length
-                if self.aqe_loss is None:
-                    # regression targets
+                    # clip the length to avoid 0 or negative values
+                    gt_length = torch.clamp(gt_length, min=1)
+
+                    # center, length loss
+                    # regression targets for center, length
                     targets_dx = (gt_ctr_x - anchors_ctr_x_posit) / anchors_width_posit
                     targets_dy = (gt_ctr_y - anchors_ctr_y_posit) / anchors_height_posit
-                    targets_theta = gt_theta
-                    targets_dl = torch.log(gt_length / anchors_length_posit)  ## TODO: anchor diagonal length or anchor width?
+                    targets_dl = torch.log(gt_length / anchors_length_posit)
 
-                    # regression targets scaling for better convergence
-                    targets_dx = targets_dx / 0.5
-                    targets_dy = targets_dy / 0.5
-                    targets_dl = targets_dl / 0.5
+                    # targets scaling
+                    targets_dx = targets_dx / target_scale
+                    targets_dy = targets_dy / target_scale
+                    targets_dl = targets_dl / target_scale
 
                     # difference between the targets and the regression values
                     regression_dx_diff = torch.abs(targets_dx - regression[positive_indices, 0])
                     regression_dy_diff = torch.abs(targets_dy - regression[positive_indices, 1])
-                    regression_theta_diff = torch.abs(torch.sin(targets_theta - regression[positive_indices, 2]))  ## (experiment_id = 3)
-                    # regression_theta_diff = torch.abs(targets_theta - regression[positive_indices, 2])  ## without sin (experiment_id = 5)
-                    regression_dl_diff = torch.abs(targets_dl - regression[positive_indices, 3])
+                    if self.aqe_loss is None:  # without AQE
+                        regression_dl_diff = torch.abs(targets_dl - regression[positive_indices, 3])
+                    else:  # with AQE
+                        regression_dl_diff = torch.abs(targets_dl - regression[positive_indices, 4])
 
                     # smooth L1 loss (less sensitive to outliers, prevents exploding gradients)
                     regression_dx_loss = torch.where(
@@ -453,142 +458,68 @@ class DetLoss(nn.Module):
                     regression_dy_loss = torch.where(
                         torch.le(regression_dy_diff, 1.0), 0.5 * torch.pow(regression_dy_diff, 2), regression_dy_diff - 0.5
                     )
-                    regression_theta_loss = torch.where(
-                        torch.le(regression_theta_diff, 1.0), 0.5 * torch.pow(regression_theta_diff, 2), regression_theta_diff - 0.5
-                    )
                     regression_dl_loss = torch.where(
                         torch.le(regression_dl_diff, 1.0), 0.5 * torch.pow(regression_dl_diff, 2), regression_dl_diff - 0.5
                     )
+
+                    # angle loss
+                    if self.aqe_loss is None:  # without AQE
+                        regression_theta_diff = torch.abs(torch.sin(gt_theta - regression[positive_indices, 2]))  ## (experiment_id = 3)
+                        # regression_theta_diff = torch.abs(targets_theta - regression[positive_indices, 2])  ## without sin (experiment_id = 5)
+                        regression_theta_loss = torch.where(
+                            torch.le(regression_theta_diff, 1.0), 0.5 * torch.pow(regression_theta_diff, 2), regression_theta_diff - 0.5
+                        )
+                    else:  # with AQE
+                        pred_theta = regression[positive_indices, 2]  # predicted angle
+                        pred_sigma = regression[positive_indices, 3]  # predicted sigma
+                        regression_theta_loss = self.aqe_loss(pred_theta, pred_sigma, gt_theta)  # AQE loss
 
                     # loss scaling
                     reg_loss_weight = 5
                     reg_loss = reg_loss_weight * (regression_dx_loss + regression_dy_loss + regression_theta_loss + regression_dl_loss)
+                    # -------------------------------------------------------------------------------
+                else:
+                    # -------------------------------------------------------------------------------
+                    # SIoU loss calculation using center, length.
+                    # -------------------------------------------------------------------------------
+                    # regression rescaling
+                    regression[positive_indices, 0] = regression[positive_indices, 0] * target_scale  # center x
+                    regression[positive_indices, 1] = regression[positive_indices, 1] * target_scale  # center y
+                    if self.aqe_loss is None:  # without AQE
+                        regression[positive_indices, 3] = regression[positive_indices, 3] * target_scale  # length
+                    else:  # with AQE
+                        regression[positive_indices, 4] = regression[positive_indices, 4] * target_scale  # length
 
-                # -------------------------------------------------------------------------------
+                    # predicted center, length
+                    pred_ctr_x = regression[positive_indices, 0] * anchors_width_posit + anchors_ctr_x_posit
+                    pred_ctr_y = regression[positive_indices, 1] * anchors_height_posit + anchors_ctr_y_posit
+                    if self.aqe_loss is None:  # without AQE
+                        pred_length = torch.exp(regression[positive_indices, 3]) * anchors_length_posit
+                    else:  # with AQE
+                        pred_length = torch.exp(regression[positive_indices, 4]) * anchors_length_posit
 
-                # -------------------------------------------------------------------------------
-                # AQE regression loss calculation using center, angle, sigma, length
-                if self.aqe_loss is not None:
-                    # regression targets
-                    targets_dx = (gt_ctr_x - anchors_ctr_x_posit) / anchors_width_posit
-                    targets_dy = (gt_ctr_y - anchors_ctr_y_posit) / anchors_height_posit
-                    targets_dl = torch.log(gt_length / anchors_length_posit)  ## TODO: anchor diagonal length or anchor width?
-
-                    # regression targets scaling for better convergence
-                    targets_dx = targets_dx / 0.5
-                    targets_dy = targets_dy / 0.5
-                    targets_dl = targets_dl / 0.5
-
-                    # difference between the targets and the regression values
-                    regression_dx_diff = torch.abs(targets_dx - regression[positive_indices, 0])
-                    regression_dy_diff = torch.abs(targets_dy - regression[positive_indices, 1])
-                    regression_dl_diff = torch.abs(targets_dl - regression[positive_indices, 4])
-
-                    # smooth L1 loss (less sensitive to outliers, prevents exploding gradients)
-                    regression_dx_loss = torch.where(
-                        torch.le(regression_dx_diff, 1.0), 0.5 * torch.pow(regression_dx_diff, 2), regression_dx_diff - 0.5
-                    )
-                    regression_dy_loss = torch.where(
-                        torch.le(regression_dy_diff, 1.0), 0.5 * torch.pow(regression_dy_diff, 2), regression_dy_diff - 0.5
-                    )
-                    regression_dl_loss = torch.where(
-                        torch.le(regression_dl_diff, 1.0), 0.5 * torch.pow(regression_dl_diff, 2), regression_dl_diff - 0.5
-                    )
-
-                    # get the predicted angle and sigma
+                    # predicted angle
                     pred_theta = regression[positive_indices, 2]
-                    pred_sigma = regression[positive_indices, 3]
 
-                    # calculate the angle loss using AQE loss
-                    regression_theta_loss = self.aqe_loss(pred_theta, pred_sigma, gt_theta)
+                    # prediceted center, angle, length
+                    pred_cal = torch.cat((pred_ctr_x.unsqueeze(1), pred_ctr_y.unsqueeze(1), pred_theta.unsqueeze(1), pred_length.unsqueeze(1)), dim=1)
 
-                    # print(f"regression_dx_loss {regression_dx_loss.mean()}")
-                    # print(f"regression_dy_loss {regression_dy_loss.mean()}")
-                    # print(f"regression_theta_loss {regression_theta_loss}")
-                    # print(f"regression_dl_loss {regression_dl_loss.mean()}")
-                    # print("---------------------------------------")
+                    # calculate the SIoU loss without needle angle loss
+                    siou_loss = self.siou_loss(pred_cal, assigned_annotations)
 
-                    # loss scaling
-                    reg_loss_weight = 5
-                    reg_loss = reg_loss_weight * (regression_dx_loss + regression_dy_loss + regression_theta_loss + regression_dl_loss)
-                # -------------------------------------------------------------------------------
+                    # angle loss
+                    gt_theta = assigned_annotations[:, 2]
+                    if self.aqe_loss is None:  # without AQE
+                        sin_needle_angle = torch.sin(gt_theta - pred_theta)  ## sine should be as close to 0 as possibile
+                        needle_angle_loss = torch.pow(sin_needle_angle, 2)  ## fix negative values
+                    else:  # with AQE
+                        pred_sigma = regression[positive_indices, 3]  # predicted sigma
+                        needle_angle_loss = self.aqe_loss(pred_theta, pred_sigma, gt_theta)  # AQE loss
 
-                # -------------------------------------------------------------------------------
-                # # SIoU loss calculation using center, angle, length
-                # anchors_ctr_x_posit = anchors_ctr_x[positive_indices]
-                # anchors_ctr_y_posit = anchors_ctr_y[positive_indices]
-                # anchors_width_posit = anchors_width[positive_indices]
-                # anchors_height_posit = anchors_height[positive_indices]
-                # anchors_length_posit = anchors_length[positive_indices]
-                # anchors_theta_posit = anchors_theta[positive_indices]
-
-                # # use the predicted shifts to compute the final regression center, angle, length
-                # pred_ctr_x = regression[positive_indices, 0] * anchors_width_posit + anchors_ctr_x_posit
-                # pred_ctr_y = regression[positive_indices, 1] * anchors_height_posit + anchors_ctr_y_posit
-
-                # """ Design the regression for angle and length """
-                # ## TODO: check the design of the angle regression
-
-                # # version 1: the reference angle is the left-top to right-bottom orientation of the anchor
-                # pred_theta = regression[positive_indices, 2] + anchors_theta_posit
-
-                # # version 2: the reference angle is the horizontal orientation
-                # # this design is not good since the reference angle is consistent for all anchors)
-                # pred_theta = regression[positive_indices, 2]
-
-                # # Although the length regression follows the original design, the training results are not good
-                # pred_length = torch.exp(regression[positive_indices, 3]) * anchors_length_posit  ## TODO: check this design
-                # """ End of design """
-
-                # # prediceted center, angle, length after regression
-                # pred_cal = torch.cat((pred_ctr_x.unsqueeze(1), pred_ctr_y.unsqueeze(1), pred_theta.unsqueeze(1), pred_length.unsqueeze(1)), dim=1)
-
-                # # calculate the SIoU loss
-                # reg_loss = self.siou_loss(pred_cal, assigned_annotations)
-
-                # -------------------------------------------------------------------------------
-
-                # -------------------------------------------------------------------------------
-                # Following is the original regression loss calculation using bounding box coordinates
-
-                # anchors_width_posit = anchors_width[positive_indices]
-                # anchors_height_posit = anchors_height[positive_indices]
-                # anchors_ctr_x_posit = anchors_ctr_x[positive_indices]
-                # anchors_ctr_y_posit = anchors_ctr_y[positive_indices]
-
-                # gt_widths = assigned_annotations[:, 2] - assigned_annotations[:, 0]
-                # gt_heights = assigned_annotations[:, 3] - assigned_annotations[:, 1]
-                # gt_ctr_x = assigned_annotations[:, 0] + 0.5 * gt_widths
-                # gt_ctr_y = assigned_annotations[:, 1] + 0.5 * gt_heights
-
-                # # clip widths to 1
-                # gt_widths = torch.clamp(gt_widths, min=1)
-                # gt_heights = torch.clamp(gt_heights, min=1)
-
-                # targets_dx = (gt_ctr_x - anchors_ctr_x_posit) / anchors_width_posit
-                # targets_dy = (gt_ctr_y - anchors_ctr_y_posit) / anchors_height_posit
-                # targets_dw = torch.log(gt_widths / anchors_width_posit)
-                # targets_dh = torch.log(gt_heights / anchors_height_posit)
-
-                # targets = torch.stack((targets_dx, targets_dy, targets_dw, targets_dh))
-                # targets = targets.t()
-
-                # if torch.cuda.is_available():
-                #     targets = targets / torch.Tensor([[0.1, 0.1, 0.2, 0.2]]).cuda()
-                # else:
-                #     targets = targets / torch.Tensor([[0.1, 0.1, 0.2, 0.2]])
-
-                # negative_indices = 1 + (~positive_indices)
-
-                # regression_diff = torch.abs(targets - regression[positive_indices, :])
-
-                # regression_loss = torch.where(
-                #     torch.le(regression_diff, 1.0 / 9.0),
-                #     0.5 * 9.0 * torch.pow(regression_diff, 2),
-                #     regression_diff - 0.5 / 9.0,
-                # )
-                # -------------------------------------------------------------------------------
-
+                    # total loss
+                    needle_angle_lost_weight = 2
+                    reg_loss = siou_loss + needle_angle_lost_weight * needle_angle_loss
+                    # -------------------------------------------------------------------------------
                 regression_losses.append(reg_loss.mean())
             else:
                 regression_losses.append(torch.tensor(0).float().cuda())
@@ -601,7 +532,7 @@ class SIoULoss(nn.Module):
     def __init__(self):
         super().__init__()
         self.eps = 1e-7  ## avoid dividing 0
-        self.needle_angle_cost_weight = 2
+        # self.needle_angle_cost_weight = 2
 
     def length_angle_to_endpoint_coordinates(self, cals):
         """Assume input_tensor is of shape (batch_size, 4)
@@ -634,8 +565,8 @@ class SIoULoss(nn.Module):
 
         pred_endpoints = self.length_angle_to_endpoint_coordinates(preds)  ## get (x1,y1, x3,y3)
         gt_endpoints = self.length_angle_to_endpoint_coordinates(targets)  ## TODO: use original value from json?
-        pred_angles_degrees = preds[:, 2]  # shape (batch_size,)
-        gt_angles_degrees = targets[:, 2]  # shape (batch_size,)
+        # pred_angles_degrees = preds[:, 2]  # shape (batch_size,)
+        # gt_angles_degrees = targets[:, 2]  # shape (batch_size,)
 
         ## get bottom-left corner (x0, y0) and up-right corner (x1, y1)
         ## torch max or min output a tuple of two tensors (value, indice)
@@ -643,9 +574,12 @@ class SIoULoss(nn.Module):
         permute_gt_endpoints = torch.index_select(gt_endpoints, 1, torch.LongTensor([0, 2, 1, 3]).cuda())
         b1_x0, b1_y0 = torch.min(permute_pred_endpoints[:, :2], 1)[0], torch.min(permute_pred_endpoints[:, 2:], 1)[0]
         b1_x1, b1_y1 = torch.max(permute_pred_endpoints[:, :2], 1)[0], torch.max(permute_pred_endpoints[:, 2:], 1)[0]
-        b2_x0, b2_y0 = torch.min(permute_gt_endpoints[:, :2], 1)[0], torch.max(permute_gt_endpoints[:, 2:], 1)[0]
+        b2_x0, b2_y0 = torch.min(permute_gt_endpoints[:, :2], 1)[0], torch.min(permute_gt_endpoints[:, 2:], 1)[0]
         b2_x1, b2_y1 = torch.max(permute_gt_endpoints[:, :2], 1)[0], torch.max(permute_gt_endpoints[:, 2:], 1)[0]
 
+        # -------------------------------------------------------------------------------
+        # official YOLOv6 implementation: https://github.com/meituan/YOLOv6/blob/main/yolov6/utils/figure_iou.py#L75
+        # -------------------------------------------------------------------------------
         # Intersection area
         inter = (torch.min(b1_x1, b2_x1) - torch.max(b1_x0, b2_x0)).clamp(0) * (torch.min(b1_y1, b2_y1) - torch.max(b1_y0, b2_y0)).clamp(0)
 
@@ -653,42 +587,106 @@ class SIoULoss(nn.Module):
         w1, h1 = b1_x1 - b1_x0, b1_y1 - b1_y0 + self.eps
         w2, h2 = b2_x1 - b2_x0, b2_y1 - b2_y0 + self.eps
         union = w1 * h1 + w2 * h2 - inter + self.eps
-
-        # IoU value of the bounding boxes
         iou = inter / union
-        cw = torch.max(b1_x1, b2_x1) - torch.min(b1_x0, b2_x0)  # convex (smallest enclosing box) width
+        # print(f"IoU {iou.mean()}")
+
+        cw = torch.max(b1_x1, b2_x1) - torch.min(b1_x0, b2_x0)  # convex width
         ch = torch.max(b1_y1, b2_y1) - torch.min(b1_y0, b2_y0)  # convex height
-        s_cw = (b2_x0 + b2_x1 - b1_x0 - b1_x1) * 0.5
-        s_ch = (b2_y0 + b2_y1 - b1_y0 - b1_y1) * 0.5
-        sigma = torch.pow(s_cw**2 + s_ch**2, 0.5) + self.eps
+
+        s_cw = (b2_x0 + b2_x1 - b1_x0 - b1_x1) * 0.5 + self.eps
+        s_ch = (b2_y0 + b2_y1 - b1_y0 - b1_y1) * 0.5 + self.eps
+
+        # Angle Cost
+        sigma = torch.pow(s_cw**2 + s_ch**2, 0.5)
         sin_alpha_1 = torch.abs(s_cw) / sigma
         sin_alpha_2 = torch.abs(s_ch) / sigma
         threshold = pow(2, 0.5) / 2
         sin_alpha = torch.where(sin_alpha_1 > threshold, sin_alpha_2, sin_alpha_1)
-
-        # Angle Cost
-        angle_cost = 1 - 2 * torch.pow(torch.sin(torch.arcsin(sin_alpha) - np.pi / 4), 2)
-        # print(f"angle {angle_cost}")
+        angle_cost = torch.cos(torch.arcsin(sin_alpha) * 2 - math.pi / 2)  ## # sin & cos transformation. This should not change the result.
+        # print(f"angle {angle_cost.mean()}")
 
         # Distance Cost
-        rho_x = (s_cw / (cw + self.eps)) ** 2
-        rho_y = (s_ch / (ch + self.eps)) ** 2
-        gamma = 2 - angle_cost
+        rho_x = (s_cw / cw) ** 2
+        rho_y = (s_ch / ch) ** 2
+        gamma = angle_cost - 2  ## the negative sign in exponential function
         distance_cost = 2 - torch.exp(gamma * rho_x) - torch.exp(gamma * rho_y)
-        # print(f"dist {distance_cost}")
+        # print(f"dist {distance_cost.mean()}")
 
         # Shape Cost
         omiga_w = torch.abs(w1 - w2) / torch.max(w1, w2)
         omiga_h = torch.abs(h1 - h2) / torch.max(h1, h2)
         shape_cost = torch.pow(1 - torch.exp(-1 * omiga_w), 4) + torch.pow(1 - torch.exp(-1 * omiga_h), 4)
-        # print(f"shape {shape_cost}")
+        # print(f"shape {shape_cost.mean()}")
 
-        ## Needle Angle Cost
-        sin_needle_angle = torch.sin(gt_angles_degrees - pred_angles_degrees)  ## sine should be as close to 0 as possibile
-        needle_angle_cost = torch.pow(sin_needle_angle, 2)  ## fix negative value
-        # print(f"needle angle {needle_angle_cost}")
+        # SIoU loss
+        siou_loss = 1.0 - iou + 0.5 * (distance_cost + shape_cost)  ## correct version
+        # print(f"siou_loss {siou_loss.mean()}")
 
-        return 1 - (iou + 0.5 * (distance_cost + shape_cost)) + needle_angle_cost * self.needle_angle_cost_weight
+        # Needle Angle Cost  (moved to DetLoss class)
+        # sin_needle_angle = torch.sin(gt_angles_degrees - pred_angles_degrees)  ## sine should be as close to 0 as possibile
+        # needle_angle_cost = torch.pow(sin_needle_angle, 2)  ## fix negative value
+        # print(f"needle angle {needle_angle_cost.mean()}")
+
+        return siou_loss  # + needle_angle_cost * self.needle_angle_cost_weight
+        # -------------------------------------------------------------------------------
+
+        # -------------------------------------------------------------------------------
+        # there are some bugs in the following code
+        # -------------------------------------------------------------------------------
+        # ## get bottom-left corner (x0, y0) and up-right corner (x1, y1)
+        # ## torch max or min output a tuple of two tensors (value, indice)
+        # permute_pred_endpoints = torch.index_select(pred_endpoints, 1, torch.LongTensor([0, 2, 1, 3]).cuda())  ## (x1, x3, y1, y3)
+        # permute_gt_endpoints = torch.index_select(gt_endpoints, 1, torch.LongTensor([0, 2, 1, 3]).cuda())
+        # b1_x0, b1_y0 = torch.min(permute_pred_endpoints[:, :2], 1)[0], torch.min(permute_pred_endpoints[:, 2:], 1)[0]
+        # b1_x1, b1_y1 = torch.max(permute_pred_endpoints[:, :2], 1)[0], torch.max(permute_pred_endpoints[:, 2:], 1)[0]
+        # b2_x0, b2_y0 = torch.min(permute_gt_endpoints[:, :2], 1)[0], torch.max(permute_gt_endpoints[:, 2:], 1)[0]
+        # b2_x1, b2_y1 = torch.max(permute_gt_endpoints[:, :2], 1)[0], torch.max(permute_gt_endpoints[:, 2:], 1)[0]
+
+        # # Intersection area
+        # inter = (torch.min(b1_x1, b2_x1) - torch.max(b1_x0, b2_x0)).clamp(0) * (torch.min(b1_y1, b2_y1) - torch.max(b1_y0, b2_y0)).clamp(0)
+
+        # # Union Area
+        # w1, h1 = b1_x1 - b1_x0, b1_y1 - b1_y0 + self.eps
+        # w2, h2 = b2_x1 - b2_x0, b2_y1 - b2_y0 + self.eps
+        # union = w1 * h1 + w2 * h2 - inter + self.eps
+
+        # # IoU value of the bounding boxes
+        # iou = inter / union
+        # cw = torch.max(b1_x1, b2_x1) - torch.min(b1_x0, b2_x0)  # convex (smallest enclosing box) width
+        # ch = torch.max(b1_y1, b2_y1) - torch.min(b1_y0, b2_y0)  # convex height
+        # s_cw = (b2_x0 + b2_x1 - b1_x0 - b1_x1) * 0.5
+        # s_ch = (b2_y0 + b2_y1 - b1_y0 - b1_y1) * 0.5
+        # sigma = torch.pow(s_cw**2 + s_ch**2, 0.5) + self.eps
+        # sin_alpha_1 = torch.abs(s_cw) / sigma
+        # sin_alpha_2 = torch.abs(s_ch) / sigma
+        # threshold = pow(2, 0.5) / 2
+        # sin_alpha = torch.where(sin_alpha_1 > threshold, sin_alpha_2, sin_alpha_1)
+        # print(f"IoU {iou.mean()}")
+
+        # # Angle Cost
+        # angle_cost = 1 - 2 * torch.pow(torch.sin(torch.arcsin(sin_alpha) - np.pi / 4), 2)
+        # print(f"angle {angle_cost.mean()}")
+
+        # # Distance Cost
+        # rho_x = (s_cw / (cw + self.eps)) ** 2
+        # rho_y = (s_ch / (ch + self.eps)) ** 2
+        # gamma = 2 - angle_cost
+        # distance_cost = 2 - torch.exp(gamma * rho_x) - torch.exp(gamma * rho_y)
+        # print(f"dist {distance_cost.mean()}")
+
+        # # Shape Cost
+        # omiga_w = torch.abs(w1 - w2) / torch.max(w1, w2)
+        # omiga_h = torch.abs(h1 - h2) / torch.max(h1, h2)
+        # shape_cost = torch.pow(1 - torch.exp(-1 * omiga_w), 4) + torch.pow(1 - torch.exp(-1 * omiga_h), 4)
+        # print(f"shape {shape_cost.mean()}")
+
+        # ## Needle Angle Cost
+        # sin_needle_angle = torch.sin(gt_angles_degrees - pred_angles_degrees)  ## sine should be as close to 0 as possibile
+        # needle_angle_cost = torch.pow(sin_needle_angle, 2)  ## fix negative value
+        # print(f"needle angle {needle_angle_cost.mean()}")
+
+        # return 1 - (iou + 0.5 * (distance_cost + shape_cost)) + needle_angle_cost * self.needle_angle_cost_weight
+        # -------------------------------------------------------------------------------
 
 
 # Angle Quality Estimation Loss

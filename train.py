@@ -351,12 +351,32 @@ def train(
                 torch.optim.swa_utils.update_bn(train_pl_loader, ema_model)
             # Use ema_model to make predictions on test data
             if model_name == "Video-Retina-UNETR":
-                val_results = evaluate(ema_model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name, det_loss, anchors_pos, with_aqe=config["Train"]["with_aqe"])
+                val_results = evaluate(
+                    ema_model,
+                    device,
+                    valid_loader,
+                    seg_focal_loss,
+                    seg_dice_loss,
+                    model_name,
+                    det_loss,
+                    anchors_pos,
+                    with_aqe=config["Train"]["with_aqe"],
+                )
             else:
                 val_results = evaluate(ema_model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name)
         else:
             if model_name == "Video-Retina-UNETR":
-                val_results = evaluate(model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name, det_loss, anchors_pos, with_aqe=config["Train"]["with_aqe"])
+                val_results = evaluate(
+                    model,
+                    device,
+                    valid_loader,
+                    seg_focal_loss,
+                    seg_dice_loss,
+                    model_name,
+                    det_loss,
+                    anchors_pos,
+                    with_aqe=config["Train"]["with_aqe"],
+                )
             else:
                 val_results = evaluate(model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name)
 
@@ -610,10 +630,9 @@ def main(config):
     seg_ft_loss = SegFocalTverskyLoss().to(device)
     seg_iou_loss = SegIoULoss().to(device)
     if model_name == "Video-Retina-UNETR":
-        if config["Train"]["with_aqe"]:
-            det_loss = DetLoss(alpha=0.25, gamma=2.0, siou_loss=SIoULoss(), aqe_loss=AQELoss()).to(device)
-        else:
-            det_loss = DetLoss(alpha=0.25, gamma=2.0, siou_loss=SIoULoss()).to(device)
+        siou_loss = SIoULoss() if config["Train"]["siou_loss"] else None
+        aqe_loss = AQELoss() if config["Train"]["with_aqe"] else None
+        det_loss = DetLoss(siou_loss=siou_loss, aqe_loss=aqe_loss).to(device)
     else:
         det_loss = None
 
