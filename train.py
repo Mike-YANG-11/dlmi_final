@@ -211,6 +211,9 @@ def train(
                 optimizer.step()
                 optimizer.zero_grad()
 
+                if config["Validation"]["ema"]:
+                    ema_model.update_parameters(model)
+
         return running_results
 
     def visualize_sample(model, loader, model_name, anchors_pos=None):
@@ -272,6 +275,11 @@ def train(
         running_pl_results = None
     ### ========================================================================
 
+    ## https://pytorch.org/docs/stable/optim.html#putting-it-all-together-ema
+    if config["Validation"]["ema"]:
+        ema_model = torch.optim.swa_utils.AveragedModel(model, \
+                multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(0.9))
+
     logger.info(f"Model: {model_name}")
     logger.info(f"Experiment ID: {experiment_id}")
 
@@ -319,13 +327,21 @@ def train(
             scheduler.step()
 
         # Evaluate the model on validation data
-        if model_name == "Video-Retina-UNETR":
-            if config["Train"]["with_aqe"]:
-                val_results = evaluate(model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name, det_loss, anchors_pos, with_aqe=True)
+        if config["Validation"]["ema"]:
+            # Update bn statistics for the ema_model at the end
+            torch.optim.swa_utils.update_bn(train_loader, ema_model)
+            if train_pl:
+                torch.optim.swa_utils.update_bn(train_pl_loader, ema_model)
+            # Use ema_model to make predictions on test data
+            if model_name == "Video-Retina-UNETR":
+                val_results = evaluate(ema_model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name, det_loss, anchors_pos, with_aqe=config["Train"]["with_aqe"])
             else:
-                val_results = evaluate(model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name, det_loss, anchors_pos)
+                val_results = evaluate(ema_model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name)
         else:
-            val_results = evaluate(model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name)
+            if model_name == "Video-Retina-UNETR":
+                val_results = evaluate(model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name, det_loss, anchors_pos, with_aqe=config["Train"]["with_aqe"])
+            else:
+                val_results = evaluate(model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name)
 
         # Print running loss on training data & loss on validation data
         print("--------------------------------------------------")
@@ -351,7 +367,10 @@ def train(
                 save_path = os.path.join(checkpoint_dir, f"video_retina_unetr_{experiment_id}.pth")
             else:
                 save_path = os.path.join(checkpoint_dir, f"video_unetr_{experiment_id}.pth")
-            torch.save(model.state_dict(), save_path)
+            if config["Validation"]["ema"]:
+                torch.save(ema_model.state_dict(), save_path)
+            else:
+                torch.save(model.state_dict(), save_path)
             print("The best model is saved!")
 
             # Visualize the output
@@ -415,8 +434,11 @@ def train(
 
         ## Semi Supervise: Pseudo labeling
         if pl_model_thres is not None and val_results["Segmentation IoU Score"] > pl_model_thres and epoch + 1 < epochs:
-            ## Predict on unlabedDataset to get pseudo labels
-            df = generate_pl(config, model, device, unlabeled_loader, model_name, df, pl_dir)
+            if config["Validation"]["ema"]:
+                ## Predict on unlabedDataset to get pseudo labels
+                df = generate_pl(config, ema_model, device, unlabeled_loader, model_name, df, pl_dir)
+            else:
+                df = generate_pl(config, model, device, unlabeled_loader, model_name, df, pl_dir)
             print(df.tail())
             ## Save csv with img folder directory, image names, pl path and confidence
             df_csv_dir = os.path.join(pl_dir, "pl.csv")
