@@ -68,6 +68,7 @@
         "experiment_id" : "4",
         "visualize" : false,
         "det_num_classes" : 2,
+        "siou_loss" : false,
         "with_aqe" : false,
         "batch_size" : 8,
         "epochs" : 30,
