@@ -173,7 +173,7 @@ def train(
                 pred_masks = model(images)  # [N, 1, H, W]
 
             # Calculate loss (use the last frame as the target mask)
-            fl = seg_focal_loss(pred_masks, masks, ignore_index=ignore_index)
+            # fl = seg_focal_loss(pred_masks, masks, ignore_index=ignore_index)
             dl = seg_dice_loss(pred_masks, masks, ignore_index=ignore_index)
             # ftl = seg_ft_loss(pred_masks, masks)
             # il = seg_iou_loss(pred_masks, masks)
@@ -181,7 +181,7 @@ def train(
                 cl, rl = det_loss(pred_classifications, pred_regressions, anchors_pos, annotations)
 
             # Calculate total loss
-            loss = dl + fl  # + il+  fl  #  ftl
+            loss = dl  # +  fl #+ il+  fl  #  ftl
             if model_name == "Video-Retina-UNETR" and train_det_head:  # with the detection head
                 loss = loss + cl + rl  ## TODO: adaptively modify the weight for the detection loss
 
@@ -190,8 +190,8 @@ def train(
             seg_iscore = seg_iou_score(pred_masks, masks)
 
             # update running loss & score
-            running_results["Loss"] += dl.item() + fl.item()
-            running_results["Segmentation Focal Loss"] += fl.item()
+            running_results["Loss"] += dl.item()  # +fl.item()
+            running_results["Segmentation Focal Loss"] += 0  # fl.item()
             running_results["Segmentation Dice Loss"] += dl.item()
             running_results["Segmentation Dice Score"] += seg_dscore.item()
             running_results["Segmentation IoU Score"] += seg_iscore.item()
@@ -277,8 +277,7 @@ def train(
 
     ## https://pytorch.org/docs/stable/optim.html#putting-it-all-together-ema
     if config["Validation"]["ema"]:
-        ema_model = torch.optim.swa_utils.AveragedModel(model, \
-                multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(0.9))
+        ema_model = torch.optim.swa_utils.AveragedModel(model, multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(0.9))
 
     logger.info(f"Model: {model_name}")
     logger.info(f"Experiment ID: {experiment_id}")
@@ -334,12 +333,32 @@ def train(
                 torch.optim.swa_utils.update_bn(train_pl_loader, ema_model)
             # Use ema_model to make predictions on test data
             if model_name == "Video-Retina-UNETR":
-                val_results = evaluate(ema_model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name, det_loss, anchors_pos, with_aqe=config["Train"]["with_aqe"])
+                val_results = evaluate(
+                    ema_model,
+                    device,
+                    valid_loader,
+                    seg_focal_loss,
+                    seg_dice_loss,
+                    model_name,
+                    det_loss,
+                    anchors_pos,
+                    with_aqe=config["Train"]["with_aqe"],
+                )
             else:
                 val_results = evaluate(ema_model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name)
         else:
             if model_name == "Video-Retina-UNETR":
-                val_results = evaluate(model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name, det_loss, anchors_pos, with_aqe=config["Train"]["with_aqe"])
+                val_results = evaluate(
+                    model,
+                    device,
+                    valid_loader,
+                    seg_focal_loss,
+                    seg_dice_loss,
+                    model_name,
+                    det_loss,
+                    anchors_pos,
+                    with_aqe=config["Train"]["with_aqe"],
+                )
             else:
                 val_results = evaluate(model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name)
 
