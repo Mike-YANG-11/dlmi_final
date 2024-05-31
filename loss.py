@@ -578,8 +578,7 @@ class SIoULoss(nn.Module):
         b2_x1, b2_y1 = torch.max(permute_gt_endpoints[:, :2], 1)[0], torch.max(permute_gt_endpoints[:, 2:], 1)[0]
 
         # -------------------------------------------------------------------------------
-        # official YOLOv6 implementation
-        # SIoU Loss https://arxiv.org/pdf/2205.12740.pdf
+        # official YOLOv6 implementation: https://github.com/meituan/YOLOv6/blob/main/yolov6/utils/figure_iou.py#L75
         # -------------------------------------------------------------------------------
         # Intersection area
         inter = (torch.min(b1_x1, b2_x1) - torch.max(b1_x0, b2_x0)).clamp(0) * (torch.min(b1_y1, b2_y1) - torch.max(b1_y0, b2_y0)).clamp(0)
