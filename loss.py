@@ -739,3 +739,20 @@ class AQELoss(nn.Module):
         angle_loss = self.loss_weight * (self.ce(gauss_label, angle_target_index) - 4)
 
         return angle_loss
+
+
+def mse_loss(input, target):
+    assert input.size() == target.size()
+    # input_softmax = F.softmax(input_logits, dim=1)
+    # target_softmax = F.softmax(target_logits, dim=1)
+    return F.mse_loss(input, target, size_average=False) 
+
+def sigmoid_rampup(current, rampup_length=30):
+    """Exponential rampup from https://arxiv.org/abs/1610.02242"""
+    """current, rampup_length: epoch"""
+    if rampup_length == 0:
+        return 1.0
+    else:
+        current = np.clip(current, 0.0, rampup_length)
+        phase = 1.0 - current / rampup_length
+        return float(np.exp(-5.0 * phase * phase))
