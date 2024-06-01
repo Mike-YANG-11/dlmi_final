@@ -16,6 +16,7 @@ class AnchorGenerator(nn.Module):
             self.sizes = [2 ** (x + 1) for x in self.pyramid_levels]  # [16, 32, 64, 128]
         if ratios is None:
             self.ratios = np.array([0.2, 0.5, 1])  ## TODO: modify the aspect ratios? original: [0.5, 1, 2]
+            # self.ratios = np.array([0.1, 0.2, 0.4, 0.7, 1])
         if scales is None:
             self.scales = np.array([2**0, 2 ** (1.0 / 3.0), 2 ** (2.0 / 3.0)])
 

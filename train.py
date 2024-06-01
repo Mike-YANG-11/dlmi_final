@@ -173,7 +173,7 @@ def train(
                 pred_masks = model(images)  # [N, 1, H, W]
 
             # Calculate loss (use the last frame as the target mask)
-            # fl = seg_focal_loss(pred_masks, masks, ignore_index=ignore_index)
+            fl = seg_focal_loss(pred_masks, masks, ignore_index=ignore_index)
             dl = seg_dice_loss(pred_masks, masks, ignore_index=ignore_index)
             # ftl = seg_ft_loss(pred_masks, masks)
             # il = seg_iou_loss(pred_masks, masks)
@@ -181,7 +181,7 @@ def train(
                 cl, rl = det_loss(pred_classifications, pred_regressions, anchors_pos, annotations)
 
             # Calculate total loss
-            loss = dl  # +  fl #+ il+  fl  #  ftl
+            loss = dl  +  fl #+ il+  fl  #  ftl
             if model_name == "Video-Retina-UNETR" and train_det_head:  # with the detection head
                 loss = loss + cl + rl  ## TODO: adaptively modify the weight for the detection loss
 
@@ -194,7 +194,7 @@ def train(
                     # [N, 1, H, W], [N, num_total_anchors, num_classes], [N, num_total_anchors, 4 or 5]
                 else:
                     ema_pred_masks = ema_model(images)  # [N, 1, H, W]
-                consistency_weight = 1 * sigmoid_rampup(epoch, epochs)
+                consistency_weight = config["Validation"]["consistency_weight"] * sigmoid_rampup(epoch, epochs)
                 consistency_l = consistency_weight * mse_loss(pred_masks, ema_pred_masks) / pred_masks.shape[0]
                 loss += consistency_l
                 consistency_l = consistency_l.item()
@@ -206,8 +206,8 @@ def train(
             seg_iscore = seg_iou_score(pred_masks, masks)
 
             # update running loss & score
-            running_results["Loss"] += dl.item() + consistency_l  # +fl.item()
-            running_results["Segmentation Focal Loss"] += 0  # fl.item()
+            running_results["Loss"] += dl.item() + fl.item() + consistency_l
+            running_results["Segmentation Focal Loss"] +=  fl.item()
             running_results["Segmentation Dice Loss"] += dl.item()
             running_results["Segmentation Dice Score"] += seg_dscore.item()
             running_results["Segmentation IoU Score"] += seg_iscore.item()
