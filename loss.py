@@ -578,8 +578,7 @@ class SIoULoss(nn.Module):
         b2_x1, b2_y1 = torch.max(permute_gt_endpoints[:, :2], 1)[0], torch.max(permute_gt_endpoints[:, 2:], 1)[0]
 
         # -------------------------------------------------------------------------------
-        # official YOLOv6 implementation
-        # SIoU Loss https://arxiv.org/pdf/2205.12740.pdf
+        # official YOLOv6 implementation: https://github.com/meituan/YOLOv6/blob/main/yolov6/utils/figure_iou.py#L75
         # -------------------------------------------------------------------------------
         # Intersection area
         inter = (torch.min(b1_x1, b2_x1) - torch.max(b1_x0, b2_x0)).clamp(0) * (torch.min(b1_y1, b2_y1) - torch.max(b1_y0, b2_y0)).clamp(0)
@@ -738,3 +737,20 @@ class AQELoss(nn.Module):
         angle_loss = self.loss_weight * (self.ce(gauss_label, angle_target_index) - 4)
 
         return angle_loss
+
+
+def mse_loss(input, target):
+    assert input.size() == target.size()
+    # input_softmax = F.softmax(input_logits, dim=1)
+    # target_softmax = F.softmax(target_logits, dim=1)
+    return F.mse_loss(input, target, size_average=False) 
+
+def sigmoid_rampup(current, rampup_length=30):
+    """Exponential rampup from https://arxiv.org/abs/1610.02242"""
+    """current, rampup_length: epoch"""
+    if rampup_length == 0:
+        return 1.0
+    else:
+        current = np.clip(current, 0.0, rampup_length)
+        phase = 1.0 - current / rampup_length
+        return float(np.exp(-5.0 * phase * phase))

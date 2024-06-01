@@ -27,7 +27,7 @@ from dataset import CustomDataset, Augmentation, UnlabeledDataset, PseudoDataset
 from evaluation import evaluate, seg_dice_score, seg_iou_score, results_dictioanry
 from visualization import show_dataset_samples, show_seg_preds_only, show_preds_with_det_head
 from model import VideoUnetr, VideoRetinaUnetr
-from loss import SegFocalLoss, SegDiceLoss, SegFocalTverskyLoss, SegIoULoss, DetLoss, SIoULoss, AQELoss
+from loss import SegFocalLoss, SegDiceLoss, SegFocalTverskyLoss, SegIoULoss, DetLoss, SIoULoss, AQELoss, mse_loss, sigmoid_rampup
 from pseudolabel import generate_pl
 
 
@@ -272,12 +272,28 @@ def train(
             if model_name == "Video-Retina-UNETR" and train_det_head:  # with the detection head
                 loss = loss + cl + rl  ## TODO: adaptively modify the weight for the detection loss
 
+            # mean teacher: consistency cost
+            ## https://github.com/CuriousAI/mean-teacher/blob/master/pytorch/main.py#L260
+            if config["Validation"]["ema"] != 0 and config["Validation"]["mean_teacher"]:
+                ema_model.train()
+                if model_name == "Video-Retina-UNETR":
+                    ema_pred_masks, ema_pred_classifications, ema_pred_regressions = ema_model(images)
+                    # [N, 1, H, W], [N, num_total_anchors, num_classes], [N, num_total_anchors, 4 or 5]
+                else:
+                    ema_pred_masks = ema_model(images)  # [N, 1, H, W]
+                consistency_weight = config["Validation"]["consistency_weight"] * sigmoid_rampup(epoch, epochs)
+                consistency_l = consistency_weight * mse_loss(pred_masks, ema_pred_masks) / pred_masks.shape[0]
+                loss += consistency_l
+                consistency_l = consistency_l.item()
+            else:
+                consistency_l = 0
+
             # Calculate the segmentation Dice score & IoU score
             seg_dscore = seg_dice_score(pred_masks, masks)
             seg_iscore = seg_iou_score(pred_masks, masks)
 
             # update running loss & score
-            running_results["Loss"] += dl.item() + fl.item()
+            running_results["Loss"] += dl.item() + fl.item() + consistency_l
             running_results["Segmentation Focal Loss"] += fl.item()
             running_results["Segmentation Dice Loss"] += dl.item()
             running_results["Segmentation Dice Score"] += seg_dscore.item()
@@ -298,7 +314,7 @@ def train(
                 optimizer.step()
                 optimizer.zero_grad()
 
-                if config["Validation"]["ema"]:
+                if config["Validation"]["ema"] != 0:
                     ema_model.update_parameters(model)
 
         return running_results
@@ -406,8 +422,9 @@ def train(
     ### ========================================================================
 
     ## https://pytorch.org/docs/stable/optim.html#putting-it-all-together-ema
-    if config["Validation"]["ema"]:
-        ema_model = torch.optim.swa_utils.AveragedModel(model, multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(0.9))
+    if config["Validation"]["ema"] != 0:
+        ema_model = torch.optim.swa_utils.AveragedModel(model, multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(config["Validation"]["ema"]))
+        ema_model.to(device)
 
     logger.info(f"Model: {model_name}")
     logger.info(f"Experiment ID: {experiment_id}")
@@ -458,7 +475,7 @@ def train(
             scheduler.step()
 
         # Evaluate the model on validation data
-        if config["Validation"]["ema"]:
+        if config["Validation"]["ema"] != 0:
             # Update bn statistics for the ema_model at the end
             torch.optim.swa_utils.update_bn(train_loader, ema_model)
             if train_pl:
@@ -520,7 +537,7 @@ def train(
                 save_path = os.path.join(checkpoint_dir, f"video_retina_unetr_{experiment_id}.pth")
             else:
                 save_path = os.path.join(checkpoint_dir, f"video_unetr_{experiment_id}.pth")
-            if config["Validation"]["ema"]:
+            if config["Validation"]["ema"] != 0:
                 torch.save(ema_model.state_dict(), save_path)
             else:
                 torch.save(model.state_dict(), save_path)
@@ -539,10 +556,16 @@ def train(
 
                 # Visualize the output on validation data (show the first batch)
                 print("Visualizing the output on validation data...")
-                if model_name == "Video-Retina-UNETR":
-                    visualize_sample(model, loader=valid_loader, model_name=model_name, anchors_pos=anchors_pos)
+                if config["Validation"]["ema"] != 0:
+                    if model_name == "Video-Retina-UNETR":
+                        visualize_sample(ema_model, loader=valid_loader, model_name=model_name, anchors_pos=anchors_pos)
+                    else:
+                        visualize_sample(ema_model, loader=valid_loader, model_name=model_name)
                 else:
-                    visualize_sample(model, loader=valid_loader, model_name=model_name)
+                    if model_name == "Video-Retina-UNETR":
+                        visualize_sample(model, loader=valid_loader, model_name=model_name, anchors_pos=anchors_pos)
+                    else:
+                        visualize_sample(model, loader=valid_loader, model_name=model_name)
         else:
             early_stop_count += 1
             if early_stop_count == 5:
@@ -587,7 +610,7 @@ def train(
 
         ## Semi Supervise: Pseudo labeling
         if pl_model_thres is not None and val_results["Segmentation IoU Score"] > pl_model_thres and epoch + 1 < epochs:
-            if config["Validation"]["ema"]:
+            if config["Validation"]["ema"] != 0:
                 ## Predict on unlabedDataset to get pseudo labels
                 df = generate_pl(config, ema_model, device, unlabeled_loader, model_name, df, pl_dir)
             else:
@@ -809,6 +832,7 @@ def main(config):
             "PL_model_thres": model_thres,
             "PL_thres": pl_thres,
             "PL_version": version,
+            "EMA": config["Validation"]["ema"],
         },
     )
     # --------------------------------------------------------------------------
