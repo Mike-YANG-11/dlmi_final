@@ -360,6 +360,7 @@ def train(
                         show_seg_preds_only(consec_images=vis_images, consec_masks=vis_masks, pred_masks=vis_pred_masks)
 
                     break
+                break
             # -------------------------------------------------------------------------------
             # original version
             # -------------------------------------------------------------------------------
@@ -760,6 +761,7 @@ def main(config):
                 labels = buffer["labels"][:, t : t + time_window]  # [N, T]
                 show_dataset_samples(images, masks, cals, endpoints, labels, figsize=(8, 8), font_size=10)
                 break
+            break
     # --------------------------------------------------------------------------
 
     # --------------------------------------------------------------------------
