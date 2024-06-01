@@ -70,7 +70,7 @@ class CustomDataset(Dataset):
                 self.json_names[i * self.buffer_num_sample : i * self.buffer_num_sample + self.buffer_length] for i in range(0, total_num_buffer)
             ]  # [["a0001.json", "a0002.json", "a0003.json", ... ], ["a0003.json", "a0004.json", "a0005.json", ... ], ...]
 
-            # drop the last buffer if the length is less than buffer_length (therefore the buffer_num_sample should be too large to avoid significant dataset drop)
+            # drop the last buffer if the length is less than buffer_length (therefore the buffer_num_sample should not be too large to avoid significant dataset drop)
             if len(self.consec_images_names[-1]) < self.buffer_length:
                 self.consec_images_names = self.consec_images_names[:-1]
                 self.consec_masks_names = self.consec_masks_names[:-1]
