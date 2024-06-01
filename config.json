@@ -75,7 +75,7 @@
         "blr" : 1.0e-4,
         "accumulation_steps" : 8,
         "loss" : "dice + focal + cls_focal + reg_l1",
-        "buffer_num_sample" : 8
+        "buffer_num_sample" : 16
     },
     
     "Validation":{
