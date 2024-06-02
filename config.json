@@ -65,23 +65,23 @@
     
     "Train":{
         "retina_head" : true,
-        "experiment_id" : "101",
+        "experiment_id" : "102",
         "visualize" : true,
         "det_num_classes" : 1,
         "siou_loss" : false,
-        "with_aqe" : false,
+        "with_aqe" : true,
         "batch_size" : 8,
         "epochs" : 30,
         "blr" : 1.0e-4,
         "accumulation_steps" : 8,
         "loss" : "dice + focal + cls_focal + reg_l1",
-        "buffer_num_sample" : 16
+        "buffer_num_sample" : 1
     },
     
     "Validation":{
         "ema":0.9,
-        "mean_teacher":true,
-        "consistency_weight":1e-2
+        "mean_teacher":false,
+        "consistency_weight":1e-3
     },
     
     "Semi_Supervise":{

@@ -196,16 +196,34 @@ def train(
                         cl, rl = det_loss(pred_classifications, pred_regressions, anchors_pos, annotations)
 
                     # Calculate total loss
-                    loss = dl + fl  # + il+  fl  #  ftl
+                    loss = dl + fl  # + il #  ftl
                     if model_name == "Video-Retina-UNETR" and train_det_head:  # with the detection head
                         loss = loss + cl + rl  ## TODO: adaptively modify the weight for the detection loss
+                    
+                    # mean teacher: consistency cost
+                    ## https://github.com/CuriousAI/mean-teacher/blob/master/pytorch/main.py#L260
+                    if config["Validation"]["ema"] != 0 and config["Validation"]["mean_teacher"]:
+                        ema_model.train()
+                        if model_name == "Video-Retina-UNETR":
+                            ema_pred_masks, ema_pred_classifications, ema_pred_regressions = ema_model(images)
+                            # [N, 1, H, W], [N, num_total_anchors, num_classes], [N, num_total_anchors, 4 or 5]
+                        else:
+                            ema_pred_masks = ema_model(images)  # [N, 1, H, W]
+                        consistency_weight = config["Validation"]["consistency_weight"] * sigmoid_rampup(epoch, epochs)
+                        consistency_l = consistency_weight * mse_loss(pred_masks, ema_pred_masks) / pred_masks.shape[0]
+                        if train_step_count == 10 or train_step_count == 50:
+                            print(f"loss {loss.item()} cons_l {consistency_l.item()}")
+                        loss += consistency_l
+                        consistency_l = consistency_l.item()
+                    else:
+                        consistency_l = 0
 
                     # Calculate the segmentation Dice score & IoU score
                     seg_dscore = seg_dice_score(pred_masks, masks)
                     seg_iscore = seg_iou_score(pred_masks, masks)
 
                     # update running loss & score
-                    running_results["Loss"] += dl.item() + fl.item()
+                    running_results["Loss"] += dl.item() + consistency_l + fl.item()
                     running_results["Segmentation Focal Loss"] += fl.item()
                     running_results["Segmentation Dice Loss"] += dl.item()
                     running_results["Segmentation Dice Score"] += seg_dscore.item()
@@ -295,7 +313,7 @@ def train(
             seg_iscore = seg_iou_score(pred_masks, masks)
 
             # update running loss & score
-            running_results["Loss"] += dl.item() + fl.item() + consistency_l
+            running_results["Loss"] += dl.item() + consistency_l + fl.item()
             running_results["Segmentation Focal Loss"] += fl.item()
             running_results["Segmentation Dice Loss"] += dl.item()
             running_results["Segmentation Dice Score"] += seg_dscore.item()
@@ -498,7 +516,7 @@ def train(
                     with_aqe=config["Train"]["with_aqe"],
                 )
             else:
-                val_results = evaluate(ema_model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name)
+                val_results = evaluate(config, ema_model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name)
         else:
             if model_name == "Video-Retina-UNETR":
                 val_results = evaluate(
