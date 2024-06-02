@@ -24,7 +24,7 @@ import pandas as pd
 
 # Custom Dataset Class
 class CustomDataset(Dataset):
-    def __init__(self, dir_path, transform=None, time_window=3, line_width=20, b_thres=False, det_num_classes=1):
+    def __init__(self, dir_path, transform=None, time_window=3, buffer_num_sample=8, line_width=20, b_thres=False, det_num_classes=1):
         """
         Args:
             root (str): Path to the dataset directory.
@@ -39,28 +39,55 @@ class CustomDataset(Dataset):
 
         self.dir_path = dir_path
         self.time_window = time_window
+        self.buffer_num_sample = buffer_num_sample
+        self.buffer_length = time_window + buffer_num_sample - 1
         self.file_names = sorted(os.listdir(self.dir_path))
         self.image_names = [f for f in self.file_names if f[0] == "a" and f.endswith(".jpg")]  # ["a0001.jpg", "a0002.jpg", ...]
         self.mask_names = ["m" + f[1:-4] + mask_name_suffix for f in self.image_names]  # ["m0001_lw_20.png", "m0002_lw_20.png", ...]
-        self.json_names = [f.replace(".jpg", ".json") for f in self.image_names]
+        self.json_names = [f.replace(".jpg", ".json") for f in self.image_names]  # ["a0001.json", "a0002.json", ...]
 
         # creat T consecutive image & mask names list
         if time_window == 1:  ## duplicate
             self.consec_images_names = [
                 [self.image_names[i]] * 3 for i in range(0, len(self.image_names) - self.time_window + 1)
-            ]  # [["a0001.jpg", "a0002.jpg", "a0003.jpg"], ["a0002.jpg", "a0003.jpg", "a0004.jpg"], ...]
+            ]  # [["a0001.jpg", "a0001.jpg", "a0001.jpg"], ["a0002.jpg", "a0002.jpg", "a0002.jpg"], ...]
             self.consec_masks_names = [
                 [self.mask_names[i]] * 3 for i in range(0, len(self.mask_names) - self.time_window + 1)
-            ]  # [["m0001_lw_20.png", "m0002_lw_20.png", "m0003_lw_20.png"], ["m0002_lw_20.png", "m0003_lw_20.png", "m0004_lw_20.png"], ...]
+            ]  # [["m0001_lw_20.png", "m0001_lw_20.png", "m0001_lw_20.png"], ["m0002_lw_20.png", "m0002_lw_20.png", "m0002_lw_20.png"], ...]
             self.consec_json_names = [[self.json_names[i]] * 3 for i in range(0, len(self.json_names) - self.time_window + 1)]
+        # -------------------------------------------------------------------------------
+        # buffer for speed up
+        # -------------------------------------------------------------------------------
         else:
+            total_num_buffer = 1 + math.ceil((len(self.image_names) - self.buffer_length) / self.buffer_num_sample)
             self.consec_images_names = [
-                self.image_names[i : i + self.time_window] for i in range(0, len(self.image_names) - self.time_window + 1)
-            ]  # [["a0001.jpg", "a0002.jpg", "a0003.jpg"], ["a0002.jpg", "a0003.jpg", "a0004.jpg"], ...]
+                self.image_names[i * self.buffer_num_sample : i * self.buffer_num_sample + self.buffer_length] for i in range(0, total_num_buffer)
+            ]  # [["a0001.jpg", "a0002.jpg", "a0003.jpg", ... ], ["a0003.jpg", "a0004.jpg", "a0005.jpg", ... ], ...]
             self.consec_masks_names = [
-                self.mask_names[i : i + self.time_window] for i in range(0, len(self.mask_names) - self.time_window + 1)
-            ]  # [["m0001_lw_20.png", "m0002_lw_20.png", "m0003_lw_20.png"], ["m0002_lw_20.png", "m0003_lw_20.png", "m0004_lw_20.png"], ...]
-            self.consec_json_names = [self.json_names[i : i + self.time_window] for i in range(0, len(self.json_names) - self.time_window + 1)]
+                self.mask_names[i * self.buffer_num_sample : i * self.buffer_num_sample + self.buffer_length] for i in range(0, total_num_buffer)
+            ]  # [["m0001_lw_20.png", "m0002_lw_20.png", "m0003_lw_20.png", ... ], ["m0003_lw_20.png", "m0004_lw_20.png", "m0005_lw_20.png", ... ], ...]
+            self.consec_json_names = [
+                self.json_names[i * self.buffer_num_sample : i * self.buffer_num_sample + self.buffer_length] for i in range(0, total_num_buffer)
+            ]  # [["a0001.json", "a0002.json", "a0003.json", ... ], ["a0003.json", "a0004.json", "a0005.json", ... ], ...]
+
+            # drop the last buffer if the length is less than buffer_length (therefore the buffer_num_sample should not be too large to avoid significant dataset drop)
+            if len(self.consec_images_names[-1]) < self.buffer_length:
+                self.consec_images_names = self.consec_images_names[:-1]
+                self.consec_masks_names = self.consec_masks_names[:-1]
+                self.consec_json_names = self.consec_json_names[:-1]
+        # -------------------------------------------------------------------------------
+        # original version
+        # -------------------------------------------------------------------------------
+        # else:
+        #     self.consec_images_names = [
+        #         self.image_names[i : i + self.time_window] for i in range(0, len(self.image_names) - self.time_window + 1)
+        #     ]  # [["a0001.jpg", "a0002.jpg", "a0003.jpg"], ["a0002.jpg", "a0003.jpg", "a0004.jpg"], ...]
+        #     self.consec_masks_names = [
+        #         self.mask_names[i : i + self.time_window] for i in range(0, len(self.mask_names) - self.time_window + 1)
+        #     ]  # [["m0001_lw_20.png", "m0002_lw_20.png", "m0003_lw_20.png"], ["m0002_lw_20.png", "m0003_lw_20.png", "m0004_lw_20.png"], ...]
+        #     self.consec_json_names = [self.json_names[i : i + self.time_window] for i in range(0, len(self.json_names) - self.time_window + 1)]
+        # -------------------------------------------------------------------------------
+
         self.transform = transform
         self.trans_totensor = tf.Compose([tf.ToTensor()])
         self.det_num_classes = det_num_classes

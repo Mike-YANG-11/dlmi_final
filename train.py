@@ -35,7 +35,8 @@ from pseudolabel import generate_pl
 def construct_datasets(config):
     image_size = config["Model"]["image_size"]
     batch_size = config["Train"]["batch_size"]
-    t = config["Model"]["time_window"]
+    time_window = config["Model"]["time_window"]
+    buffer_num_sample = config["Train"]["buffer_num_sample"]
     line_width = config["Data"]["line_width"]
     det_num_classes = config["Train"]["det_num_classes"]
 
@@ -47,7 +48,8 @@ def construct_datasets(config):
         subdataset = CustomDataset(
             os.path.join(config["Data"]["folder_dir"], folder_name),
             transform=train_transform,
-            time_window=t,
+            time_window=time_window,
+            buffer_num_sample=buffer_num_sample,
             line_width=line_width,
             det_num_classes=det_num_classes,
         )
@@ -58,7 +60,8 @@ def construct_datasets(config):
         subdataset = CustomDataset(
             os.path.join(config["Data"]["folder_dir"], folder_name),
             transform=valid_transform,
-            time_window=t,
+            time_window=time_window,
+            buffer_num_sample=buffer_num_sample,
             line_width=line_width,
             det_num_classes=det_num_classes,
         )
@@ -69,7 +72,8 @@ def construct_datasets(config):
         subdataset = CustomDataset(
             os.path.join(config["Data"]["folder_dir"], folder_name),
             transform=valid_transform,
-            time_window=t,
+            time_window=time_window,
+            buffer_num_sample=buffer_num_sample,
             line_width=line_width,
             det_num_classes=det_num_classes,
         )
@@ -80,7 +84,8 @@ def construct_datasets(config):
         subdataset = CustomDataset(
             os.path.join(config["Data"]["folder_dir"], folder_name),
             transform=valid_transform,
-            time_window=t,
+            time_window=time_window,
+            buffer_num_sample=buffer_num_sample,
             line_width=line_width,
             det_num_classes=det_num_classes,
         )
@@ -113,13 +118,13 @@ def construct_datasets(config):
 def construct_unlabeled_datasets(config):
     image_size = config["Model"]["image_size"]
     batch_size = config["Train"]["batch_size"]
-    t = config["Model"]["time_window"]
+    time_window = config["Model"]["time_window"]
 
     valid_transform = Augmentation(resized_crop=False, color_jitter=False, horizontal_flip=False, image_size=image_size)
 
     dataset_list = []
     for folder_name in config["Data"]["Unlabeled_folder"]:
-        subdataset = UnlabeledDataset(os.path.join(config["Data"]["folder_dir"], folder_name), transform=valid_transform, time_window=t)
+        subdataset = UnlabeledDataset(os.path.join(config["Data"]["folder_dir"], folder_name), transform=valid_transform, time_window=time_window)
         dataset_list.append(subdataset)
 
     unlabeled_dataset = ConcatDataset(dataset_list)
@@ -149,6 +154,88 @@ def train(
     visualize=True,
 ):
     def train_one_epoch(model, optimizer, train_loader, running_results, train_det_head=True, ignore_index=None):
+        # parameters for iteration over the buffer
+        time_window = config["Model"]["time_window"]
+        buffer_num_sample = config["Train"]["buffer_num_sample"]
+
+        # total number of training steps in one epoch & count the current step
+        ep_train_steps = len(train_loader) * buffer_num_sample
+        train_step_count = 0
+
+        with tqdm(total=ep_train_steps) as pbar:
+            for buffer in train_loader:  # loader getitem() returns a buffer
+                for t in range(buffer_num_sample):  # iterate over the buffer to get samples
+                    # Image data
+                    images = buffer["images"][:, t : t + time_window, :, :].to(device)  # [N, T, H, W]
+
+                    # Segmentation ground truth masks
+                    masks = buffer["masks"][:, t : t + time_window, :, :].to(device)  # [N, T, H, W]
+                    masks = masks[:, -1, :, :].unsqueeze(1)  # [N, 1, H, W]
+
+                    # Detection ground truth annotations
+                    if model_name == "Video-Retina-UNETR" and train_det_head:
+                        cals = buffer["cals"][:, t : t + time_window, :].to(device)  # [N, T, 4]
+                        labels = buffer["labels"][:, t : t + time_window].to(device)  # [N, T]
+                        labels = labels.unsqueeze(-1)  # [N, T, 1]
+                        annotations = torch.cat([cals, labels], dim=-1)  # [N, T, 5]
+                        annotations = annotations[:, -1, :].unsqueeze(1)  # [N, 1, 5]
+
+                    # Forward pass
+                    if model_name == "Video-Retina-UNETR":
+                        pred_masks, pred_classifications, pred_regressions = model(images)
+                        # [N, 1, H, W], [N, num_total_anchors, num_classes], [N, num_total_anchors, 4 or 5]
+                    else:
+                        pred_masks = model(images)  # [N, 1, H, W]
+
+                    # Calculate loss (use the last frame as the target mask)
+                    fl = seg_focal_loss(pred_masks, masks, ignore_index=ignore_index)
+                    dl = seg_dice_loss(pred_masks, masks, ignore_index=ignore_index)
+                    # ftl = seg_ft_loss(pred_masks, masks)
+                    # il = seg_iou_loss(pred_masks, masks)
+                    if model_name == "Video-Retina-UNETR" and train_det_head:  # with the detection head
+                        cl, rl = det_loss(pred_classifications, pred_regressions, anchors_pos, annotations)
+
+                    # Calculate total loss
+                    loss = dl + fl  # + il+  fl  #  ftl
+                    if model_name == "Video-Retina-UNETR" and train_det_head:  # with the detection head
+                        loss = loss + cl + rl  ## TODO: adaptively modify the weight for the detection loss
+
+                    # Calculate the segmentation Dice score & IoU score
+                    seg_dscore = seg_dice_score(pred_masks, masks)
+                    seg_iscore = seg_iou_score(pred_masks, masks)
+
+                    # update running loss & score
+                    running_results["Loss"] += dl.item() + fl.item()
+                    running_results["Segmentation Focal Loss"] += fl.item()
+                    running_results["Segmentation Dice Loss"] += dl.item()
+                    running_results["Segmentation Dice Score"] += seg_dscore.item()
+                    running_results["Segmentation IoU Score"] += seg_iscore.item()
+                    if model_name == "Video-Retina-UNETR" and train_det_head:  # with the detection head
+                        running_results["Loss"] += cl.item() + rl.item()
+                        running_results["Detection Classification Loss"] += cl.item()
+                        running_results["Detection Regression Loss"] += rl.item()
+
+                    # Gradient accumulation normalization
+                    loss = loss / accumulation_steps
+                    loss.backward()
+
+                    # Update weights
+                    if (train_step_count + 1) % accumulation_steps == 0 or train_step_count == ep_train_steps - 1:
+                        # Gradient clipping
+                        nn.utils.clip_grad_norm_(model.parameters(), max_norm=10, norm_type=2)
+                        optimizer.step()
+                        optimizer.zero_grad()
+
+                        if config["Validation"]["ema"]:
+                            ema_model.update_parameters(model)
+
+                    train_step_count += 1
+                    pbar.update(1)
+
+                    if train_step_count == ep_train_steps:
+                        return running_results
+
+    def pl_train_one_epoch(model, optimizer, train_loader, running_results, train_det_head=True, ignore_index=None):
         for step, samples in enumerate(tqdm(train_loader)):
             # Image data
             images = samples["images"].to(device)  # [N, T, H, W]
@@ -181,7 +268,7 @@ def train(
                 cl, rl = det_loss(pred_classifications, pred_regressions, anchors_pos, annotations)
 
             # Calculate total loss
-            loss = dl # +  fl #+ il+  fl  #  ftl
+            loss = dl + fl  # + il+  fl  #  ftl
             if model_name == "Video-Retina-UNETR" and train_det_head:  # with the detection head
                 loss = loss + cl + rl  ## TODO: adaptively modify the weight for the detection loss
 
@@ -202,14 +289,14 @@ def train(
                 consistency_l = consistency_l.item()
             else:
                 consistency_l = 0
-            
+
             # Calculate the segmentation Dice score & IoU score
             seg_dscore = seg_dice_score(pred_masks, masks)
             seg_iscore = seg_iou_score(pred_masks, masks)
 
             # update running loss & score
-            running_results["Loss"] += dl.item() #+ fl.item() + consistency_l
-            running_results["Segmentation Focal Loss"] += 0# fl.item()
+            running_results["Loss"] += dl.item() + fl.item() + consistency_l
+            running_results["Segmentation Focal Loss"] += fl.item()
             running_results["Segmentation Dice Loss"] += dl.item()
             running_results["Segmentation Dice Score"] += seg_dscore.item()
             running_results["Segmentation IoU Score"] += seg_iscore.item()
@@ -235,44 +322,88 @@ def train(
         return running_results
 
     def visualize_sample(model, loader, model_name, anchors_pos=None):
+        time_window = config["Model"]["time_window"]
+        buffer_num_sample = config["Train"]["buffer_num_sample"]
         with torch.no_grad():
-            for _, vis_samples in enumerate(loader):
-                # Move to device & forward pass
-                vis_images = vis_samples["images"].to(device)
-                vis_masks = vis_samples["masks"]
+            for buffer in loader:
+                for t in range(buffer_num_sample):  # iterate over the buffer to get samples
+                    vis_images = buffer["images"][:, t : t + time_window, :, :].to(device)  # [N, T, H, W]
+                    vis_masks = buffer["masks"][:, t : t + time_window, :, :]  # [N, T, H, W]
 
-                # Forward pass
-                if model_name == "Video-Retina-UNETR":
-                    vis_pred_masks, vis_classifications, vis_regressions = model(vis_images)
-                    # [N, 1, H, W], [N, num_total_anchors, num_classes], [N, num_total_anchors, 4]
-                else:
-                    vis_pred_masks = model(vis_images)  # [N, 1, H, W]
+                    # Forward pass
+                    if model_name == "Video-Retina-UNETR":
+                        vis_pred_masks, vis_classifications, vis_regressions = model(vis_images)
+                        # [N, 1, H, W], [N, num_total_anchors, num_classes], [N, num_total_anchors, 4]
+                    else:
+                        vis_pred_masks = model(vis_images)  # [N, 1, H, W]
 
-                # Detach and move to CPU
-                vis_images = vis_images.detach().cpu()
-                vis_pred_masks = vis_pred_masks.detach().cpu()
-                if model_name == "Video-Retina-UNETR":
-                    vis_classifications = vis_classifications.detach().cpu()  # [N, num_total_anchors, num_classes]
-                    vis_regressions = vis_regressions.detach().cpu()  # [N, num_total_anchors, 4]
-                    anchors_pos = anchors_pos.detach().cpu()  # [num_total_anchors, 4]
+                    # Detach and move to CPU
+                    vis_images = vis_images.detach().cpu()
+                    vis_pred_masks = vis_pred_masks.detach().cpu()
+                    if model_name == "Video-Retina-UNETR":
+                        vis_classifications = vis_classifications.detach().cpu()  # [N, num_total_anchors, num_classes]
+                        vis_regressions = vis_regressions.detach().cpu()  # [N, num_total_anchors, 4]
+                        anchors_pos = anchors_pos.detach().cpu()  # [num_total_anchors, 4]
 
-                # Visualize the output
-                if model_name == "Video-Retina-UNETR":
-                    show_preds_with_det_head(
-                        vis_images,
-                        vis_masks,
-                        vis_pred_masks,
-                        vis_classifications,
-                        vis_regressions,
-                        anchors_pos,
-                        topk=1,
-                        with_aqe=config["Train"]["with_aqe"],
-                    )
-                    anchors_pos = anchors_pos.cuda()
-                else:
-                    show_seg_preds_only(consec_images=vis_images, consec_masks=vis_masks, pred_masks=vis_pred_masks)
+                    # Visualize the output
+                    if model_name == "Video-Retina-UNETR":
+                        show_preds_with_det_head(
+                            vis_images,
+                            vis_masks,
+                            vis_pred_masks,
+                            vis_classifications,
+                            vis_regressions,
+                            anchors_pos,
+                            topk=1,
+                            with_aqe=config["Train"]["with_aqe"],
+                        )
+                        anchors_pos = anchors_pos.cuda()
+                    else:
+                        show_seg_preds_only(consec_images=vis_images, consec_masks=vis_masks, pred_masks=vis_pred_masks)
 
+                    break
                 break
+            # -------------------------------------------------------------------------------
+            # original version
+            # -------------------------------------------------------------------------------
+            # for _, vis_samples in enumerate(loader):
+            #     # Move to device & forward pass
+            #     vis_images = vis_samples["images"].to(device)
+            #     vis_masks = vis_samples["masks"]
+
+            #     # Forward pass
+            #     if model_name == "Video-Retina-UNETR":
+            #         vis_pred_masks, vis_classifications, vis_regressions = model(vis_images)
+            #         # [N, 1, H, W], [N, num_total_anchors, num_classes], [N, num_total_anchors, 4]
+            #     else:
+            #         vis_pred_masks = model(vis_images)  # [N, 1, H, W]
+
+            #     # Detach and move to CPU
+            #     vis_images = vis_images.detach().cpu()
+            #     vis_pred_masks = vis_pred_masks.detach().cpu()
+            #     if model_name == "Video-Retina-UNETR":
+            #         vis_classifications = vis_classifications.detach().cpu()  # [N, num_total_anchors, num_classes]
+            #         vis_regressions = vis_regressions.detach().cpu()  # [N, num_total_anchors, 4]
+            #         anchors_pos = anchors_pos.detach().cpu()  # [num_total_anchors, 4]
+
+            #     # Visualize the output
+            #     if model_name == "Video-Retina-UNETR":
+            #         show_preds_with_det_head(
+            #             vis_images,
+            #             vis_masks,
+            #             vis_pred_masks,
+            #             vis_classifications,
+            #             vis_regressions,
+            #             anchors_pos,
+            #             topk=1,
+            #             with_aqe=config["Train"]["with_aqe"],
+            #         )
+            #         anchors_pos = anchors_pos.cuda()
+            #     else:
+            #         show_seg_preds_only(consec_images=vis_images, consec_masks=vis_masks, pred_masks=vis_pred_masks)
+
+            #     break
+            # -------------------------------------------------------------------------------
 
     epochs = config["Train"]["epochs"]
     accumulation_steps = config["Train"]["accumulation_steps"]
@@ -295,8 +426,7 @@ def train(
 
     ## https://pytorch.org/docs/stable/optim.html#putting-it-all-together-ema
     if config["Validation"]["ema"] != 0:
-        ema_model = torch.optim.swa_utils.AveragedModel(model, \
-                multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(config["Validation"]["ema"]))
+        ema_model = torch.optim.swa_utils.AveragedModel(model, multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(config["Validation"]["ema"]))
         ema_model.to(device)
 
     logger.info(f"Model: {model_name}")
@@ -325,6 +455,8 @@ def train(
 
         running_results = train_one_epoch(model, optimizer, train_loader, running_results)
 
+        ep_train_steps = len(train_loader) * config["Train"]["buffer_num_sample"]
+
         ## Semi Supervise: Train with Pseudo Label
         if train_pl:
             print("Training PL...")
@@ -332,7 +464,7 @@ def train(
             if config["Semi_Supervise"]["Pseudo_label"]["pl_version"] == 2:
                 ignore = 2
             running_pl_results = results_dictioanry(model_name="", type="running_results")
-            running_pl_results = train_one_epoch(
+            running_pl_results = pl_train_one_epoch(
                 model,
                 optimizer,
                 train_loader=train_pl_loader,
@@ -354,6 +486,7 @@ def train(
             # Use ema_model to make predictions on test data
             if model_name == "Video-Retina-UNETR":
                 val_results = evaluate(
+                    config,
                     ema_model,
                     device,
                     valid_loader,
@@ -369,6 +502,7 @@ def train(
         else:
             if model_name == "Video-Retina-UNETR":
                 val_results = evaluate(
+                    config,
                     model,
                     device,
                     valid_loader,
@@ -380,14 +514,14 @@ def train(
                     with_aqe=config["Train"]["with_aqe"],
                 )
             else:
-                val_results = evaluate(model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name)
+                val_results = evaluate(config, model, device, valid_loader, seg_focal_loss, seg_dice_loss, model_name)
 
         # Print running loss on training data & loss on validation data
         print("--------------------------------------------------")
         print(f"Epoch [{epoch+1}/{epochs}]")
-        print(f"Training Loss: {running_results['Loss']/len(train_loader):.6f}")
+        print(f"Training Loss: {running_results['Loss']/ep_train_steps:.6f}")
         if train_pl:
-            print(f"Training PL Loss: {running_pl_results['Loss']/len(train_pl_loader):.6f}")
+            print(f"Training PL Loss: {running_pl_results['Loss']/ep_train_steps:.6f}")
         print(f"Validation Loss: {val_results['Loss']:.6f}")
 
         # Save the best model & visualize the output if the model is improved
@@ -425,7 +559,7 @@ def train(
 
                 # Visualize the output on validation data (show the first batch)
                 print("Visualizing the output on validation data...")
-                if config["Validation"]["ema"] != 0: 
+                if config["Validation"]["ema"] != 0:
                     if model_name == "Video-Retina-UNETR":
                         visualize_sample(ema_model, loader=valid_loader, model_name=model_name, anchors_pos=anchors_pos)
                     else:
@@ -450,7 +584,7 @@ def train(
         logger.info("--------------------------------------------------")
         logger.info(f"Running Results on Training Data:")
         for key, value in running_results.items():
-            logger.info(f"{key}: {value/len(train_loader):.6f}")
+            logger.info(f"{key}: {value/ep_train_steps:.6f}")
         logger.info("--------------------------------------------------")
         if train_pl and running_pl_results is not None:
             logger.info(f"Running PL Results on Pseudo Label Data:")
@@ -469,7 +603,7 @@ def train(
         # Log to wandb
         wandb_results = {}
         for key, value in running_results.items():
-            wandb_results[f"Training {key}"] = value / len(train_loader)
+            wandb_results[f"Training {key}"] = value / ep_train_steps
         if train_pl and running_pl_results is not None:
             for key, value in running_pl_results.items():
                 wandb_results[f"PseudoLabel/Training {key}"] = value / len(train_pl_loader)
@@ -558,6 +692,7 @@ def main(config):
         model = VideoUnetr(
             img_size=config["Model"]["image_size"],
             patch_size=config["Model"]["patch_size"],
+            in_chans=config["Model"]["time_window"],
             embed_dim=config["Model"]["embed_dim"],
             depth=config["Model"]["depth"],
             num_heads=config["Model"]["num_heads"],
@@ -570,6 +705,7 @@ def main(config):
         model = VideoRetinaUnetr(
             img_size=config["Model"]["image_size"],
             patch_size=config["Model"]["patch_size"],
+            in_chans=config["Model"]["time_window"],
             embed_dim=config["Model"]["embed_dim"],
             depth=config["Model"]["depth"],
             num_heads=config["Model"]["num_heads"],
@@ -583,13 +719,27 @@ def main(config):
 
     # load pretrained ViT weights
     vit_pretrained_weights = "MAE ImageNet 1k"
+    # checkpoint download page link: https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_base.pth
 
     if vit_pretrained_weights == "MAE ImageNet 1k":
-        checkpoint = torch.load(
-            "./mae_pretrain_vit_base_checkpoints/mae_pretrain_vit_base.pth"
-        )  # download page link: https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_base.pth
-        model.load_state_dict(checkpoint["model"], strict=False)
-        print(f"{vit_pretrained_weights} pretrained weights loaded!")
+        if config["Model"]["time_window"] % 3 != 0 and config["Model"]["time_window"] != 1:
+            raise ValueError("The time window must be 1 or a multiple of 3 for loading the pretrained weights.")
+        elif config["Model"]["time_window"] == 3:
+            checkpoint = torch.load("./mae_pretrain_vit_base_checkpoints/mae_pretrain_vit_base.pth")
+            model.load_state_dict(checkpoint["model"], strict=False)
+            print(f"{vit_pretrained_weights} pretrained weights loaded!")
+        else:
+            checkpoint = torch.load("./mae_pretrain_vit_base_checkpoints/mae_pretrain_vit_base.pth")
+            # load pretrained weights layer by layer
+            for key, value in checkpoint["model"].items():
+                if key == "patch_embed.proj.weight":
+                    # repeat the weights for the time window in patch linear projection layer
+                    print(f"Copy {key} with shape {value.shape} to {model.patch_embed.proj.weight.shape}")
+                    num_copy = config["Model"]["time_window"] // 3
+                    model.patch_embed.proj.weight.data.copy_((value / num_copy).repeat(1, num_copy, 1, 1))
+                else:
+                    model.state_dict()[key].copy_(value)
+            print(f"{vit_pretrained_weights} pretrained weights loaded!")
     # --------------------------------------------------------------------------
 
     # --------------------------------------------------------------------------
@@ -602,16 +752,17 @@ def main(config):
     # Show the first batch of training data
     if visualize:
         print("Visualizing the first batch of training data...")
-        for _, samples in enumerate(train_loader):
-            show_dataset_samples(
-                samples["images"],
-                samples["masks"],
-                samples["cals"],
-                samples["endpoints"],
-                samples["labels"],
-                figsize=(8, 8),
-                font_size=10,
-            )
+        time_window = config["Model"]["time_window"]
+        buffer_num_sample = config["Train"]["buffer_num_sample"]
+        for buffer in train_loader:
+            for t in range(buffer_num_sample):  # iterate over the buffer to get samples
+                images = buffer["images"][:, t : t + time_window, :, :]  # [N, T, H, W]
+                masks = buffer["masks"][:, t : t + time_window, :, :]  # [N, T, H, W]
+                cals = buffer["cals"][:, t : t + time_window, :]  # [N, T, 4]
+                endpoints = buffer["endpoints"][:, t : t + time_window, :]  # [N, T, 2]
+                labels = buffer["labels"][:, t : t + time_window]  # [N, T]
+                show_dataset_samples(images, masks, cals, endpoints, labels, figsize=(8, 8), font_size=10)
+                break
             break
     # --------------------------------------------------------------------------
 
@@ -665,6 +816,7 @@ def main(config):
         config={
             "Architecture": model_name,
             "Time Window": config["Model"]["time_window"],
+            "Number of Samples in Buffer": config["Train"]["buffer_num_sample"],
             "ViT Pre-Trained Weights": vit_pretrained_weights,
             "Skip Connection Channels": f"{config['Model']['skip_chans']}",
             "Number of Parameters": num_params,
@@ -684,7 +836,7 @@ def main(config):
             "PL_model_thres": model_thres,
             "PL_thres": pl_thres,
             "PL_version": version,
-            "EMA":config["Validation"]["ema"]
+            "EMA": config["Validation"]["ema"],
         },
     )
     # --------------------------------------------------------------------------

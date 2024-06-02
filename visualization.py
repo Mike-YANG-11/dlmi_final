@@ -168,7 +168,7 @@ def show_preds_with_det_head(
                 vis_pred_mask = cv2.cvtColor(vis_pred_mask, cv2.COLOR_GRAY2BGR)
 
                 # get the top-k detection endpoints
-                topk_score, topk_id, topk_endpoints, topk_pred_cals = detect_postprocessing(
+                topk_score, topk_id, topk_endpoints, topk_pred_cals, topk_pred_sigma = detect_postprocessing(
                     pred_cls,
                     pred_reg,
                     anchors_pos,
@@ -193,6 +193,7 @@ def show_preds_with_det_head(
                 print(f"top-k id: {topk_id}")
                 print(f"top-k endpoints: {topk_endpoints}")
                 print(f"top-k pred cals: {topk_pred_cals}")
+                print(f"top-k pred sigma: {topk_pred_sigma}")
 
                 # predicted mask
                 vis_pred_mask[pred_mask[0] > 0.5, :] = 255

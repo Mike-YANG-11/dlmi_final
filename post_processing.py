@@ -80,6 +80,7 @@ def detect_postprocessing(pred_cls, pred_reg, anchors_pos, image_width, image_he
     topk_pred_ctr_y = pred_reg[topk_idx, 1] * topk_anchors_height + topk_anchors_ctr_y  # [k,]
     topk_pred_theta = pred_reg[topk_idx, 2]  # [k,]
     if not with_aqe:
+        topk_pred_sigma = None
         topk_pred_length = torch.exp(pred_reg[topk_idx, 3]) * topk_anchors_length
     else:
         topk_pred_sigma = pred_reg[topk_idx, 3]  # [k,]
@@ -113,4 +114,59 @@ def detect_postprocessing(pred_cls, pred_reg, anchors_pos, image_width, image_he
             endpoints = [endpoints[0][0], endpoints[0][1], endpoints[1][0], endpoints[1][1]]  # [4,]
             topk_endpoints[k] = torch.tensor(endpoints, dtype=torch.float32)  # [4,]
 
-    return topk_score, topk_id, topk_endpoints, topk_pred_cals
+    return topk_score, topk_id, topk_endpoints, topk_pred_cals, topk_pred_sigma
+
+
+def aqe_refined_mask(pred_masks, pred_classifications, pred_regressions, anchors_pos, conf_thresh=0.1, line_width=30):
+    """
+    Refine the mask with the predicted endpoints from detection head
+    Args:
+        pred_mask (torch.Tensor): predicted mask. shape [N, 1, H, W]
+        pred_classifications (torch.Tensor): predicted class scores. shape [N, num_total_anchors, num_classes]
+        pred_regressions (torch.Tensor): predicted regression values. shape [N, num_total_anchors, 5]
+        anchors_pos (torch.Tensor): anchor positions. shape [num_total_anchors, 4]
+        conf_thresh (float): confidence threshold for the detection head
+        factor (float): the weight factor for the confidence score and angle quality score
+    Returns:
+        refined_mask (torch.Tensor): refined mask. shape [N, H, W]
+    """
+    pred_masks = pred_masks.squeeze(1)  # [N, 1, H, W] -> [N, H, W]
+
+    refined_masks = []
+    for i in range(pred_masks.shape[0]):
+        pred_mask = pred_masks[i]  # [H, W]
+        pred_cls = pred_classifications[i]  # [num_total_anchors, num_classes]
+        pred_reg = pred_regressions[i]  # [num_total_anchors, 5]
+
+        # get the top-1 detection endpoints
+        topk_score, topk_id, topk_endpoints, topk_pred_cals, topk_pred_sigma = detect_postprocessing(
+            pred_cls,
+            pred_reg,
+            anchors_pos,
+            image_width=pred_mask.shape[1],
+            image_height=pred_mask.shape[0],
+            conf_thresh=conf_thresh,
+            topk=1,
+            with_aqe=True,
+        )
+        top1_endpoints = topk_endpoints[0]
+        top1_sigma = topk_pred_sigma[0]
+
+        # append a blank mask if top-1 endpoint is not detected (confidence score is lower than 0.1)
+        if top1_endpoints.sum() == 0:
+            refined_masks.append(torch.zeros_like(pred_mask, dtype=torch.float32).cuda())
+            continue
+
+        # use the predicted endpoints to refine the mask if top-1 sigma is lower than 0.1
+        if top1_sigma < 0.1:
+            top1_endpoints = top1_endpoints.cpu().numpy().astype(np.uint8)
+            line_mask = np.zeros_like(pred_mask.cpu().numpy(), dtype=np.uint8)
+            line_mask = cv2.line(line_mask, (top1_endpoints[0], top1_endpoints[1]), (top1_endpoints[2], top1_endpoints[3]), 255, line_width)
+            # multiply the mask with the original mask
+            refined_mask = pred_mask * torch.tensor(line_mask, dtype=torch.float32).cuda()
+            refined_masks.append(refined_mask)
+        else:
+            refined_masks.append(pred_mask)
+
+    refined_masks = torch.stack(refined_masks, dim=0).unsqueeze(1)  # [N, 1, H, W]
+    return refined_masks

@@ -8,7 +8,7 @@ from sklearn.decomposition import PCA
 
 from tqdm import tqdm
 
-from post_processing import detect_postprocessing
+from post_processing import detect_postprocessing, aqe_refined_mask
 
 
 # Segmentation Dice Score Function
@@ -305,10 +305,10 @@ def det_line_evaluate(
         pred_cls = pred_classifications[i]  # [num_total_anchors, num_classes]
         pred_reg = pred_regressions[i]  # [num_total_anchors, 4]
         annotation = annotations[i]  # [1, 5]
-        annotation = annotation.squeeze(0)  # [5]
+        annotation = annotation.squeeze(0)  # [5,]
 
         # get the top-1 detection endpoints
-        _, _, topk_endpoints, _ = detect_postprocessing(
+        topk_score, topk_id, topk_endpoints, topk_pred_cals, topk_pred_sigma = detect_postprocessing(
             pred_cls,
             pred_reg,
             anchors_pos,
@@ -366,7 +366,9 @@ def det_line_evaluate(
 
 
 # Evaluation Function
-def evaluate(model, device, loader, seg_focal_loss, seg_dice_loss, model_name, det_loss=None, anchors_pos=None, with_aqe=False):
+def evaluate(
+    config, model, device, loader, seg_focal_loss, seg_dice_loss, model_name, det_loss=None, anchors_pos=None, with_aqe=False, refined_mask=False
+):
     print("Evaluating the model...")
     model.eval()
     model.to(device)
@@ -399,102 +401,220 @@ def evaluate(model, device, loader, seg_focal_loss, seg_dice_loss, model_name, d
         total_det_count_eal = np.array([0, 0, 0, 0])  # [TP, FP, TN, FN], EAL score based
 
     with torch.no_grad():
-        for step, samples in enumerate(tqdm(loader)):
-            # Image data
-            images = samples["images"].to(device)  # [N, T, H, W]
+        # parameters for iteration over the buffer
+        time_window = config["Model"]["time_window"]
+        buffer_num_sample = config["Train"]["buffer_num_sample"]
 
-            # Segmentation ground truth masks
-            masks = samples["masks"].to(device)  # [N, T, H, W]
-            masks = masks[:, -1, :, :].unsqueeze(1)  # [N, 1, H, W]
+        # total steps for evaluation
+        eval_total_steps = len(loader) * buffer_num_sample
+        with tqdm(total=eval_total_steps) as pbar:
+            for buffer in loader:  # loader getitem() returns a buffer
+                for t in range(buffer_num_sample):  # iterate over the buffer to get samples
+                    # Image data
+                    images = buffer["images"][:, t : t + time_window, :, :].to(device)  # [N, T, H, W]
 
-            # Detection ground truth annotations
-            if model_name == "Video-Retina-UNETR":
-                cals = samples["cals"].to(device)  # [N, T, 4]
-                labels = samples["labels"].to(device)  # [N, T]
-                labels = labels.unsqueeze(-1)  # [N, T, 1]
-                annotations = torch.cat([cals, labels], dim=-1)  # [N, T, 5]
-                annotations = annotations[:, -1, :].unsqueeze(1)  # [N, 1, 5]
+                    # Segmentation ground truth masks
+                    masks = buffer["masks"][:, t : t + time_window, :, :].to(device)  # [N, T, H, W]
+                    masks = masks[:, -1, :, :].unsqueeze(1)  # [N, 1, H, W]
 
-            # Forward pass
-            if model_name == "Video-Retina-UNETR":
-                pred_masks, pred_classifications, pred_regressions = model(images)
-                # [N, 1, H, W], [N, num_total_anchors, num_classes], [N, num_total_anchors, 4 or 5]
-            else:
-                pred_masks = model(images)  # [N, 1, H, W]
+                    # Detection ground truth annotations
+                    if model_name == "Video-Retina-UNETR":
+                        cals = buffer["cals"][:, t : t + time_window, :].to(device)  # [N, T, 4]
+                        labels = buffer["labels"][:, t : t + time_window].to(device)  # [N, T]
+                        labels = labels.unsqueeze(-1)  # [N, T, 1]
+                        annotations = torch.cat([cals, labels], dim=-1)  # [N, T, 5]
+                        annotations = annotations[:, -1, :].unsqueeze(1)  # [N, 1, 5]
 
-            # Calculate loss (use the last frame as the target mask)
-            fl = seg_focal_loss(pred_masks, masks)
-            dl = seg_dice_loss(pred_masks, masks)
-            if model_name == "Video-Retina-UNETR":  # with the detection head
-                cl, rl = det_loss(pred_classifications, pred_regressions, anchors_pos, annotations)
+                    # Forward pass
+                    if model_name == "Video-Retina-UNETR":
+                        pred_masks, pred_classifications, pred_regressions = model(images)
+                        # [N, 1, H, W], [N, num_total_anchors, num_classes], [N, num_total_anchors, 4 or 5]
+                    else:
+                        pred_masks = model(images)  # [N, 1, H, W]
 
-            # Calculate total loss
-            loss = fl + dl
-            if model_name == "Video-Retina-UNETR":  # with the detection head
-                loss = loss + cl + rl
+                    # Calculate loss (use the last frame as the target mask)
+                    fl = seg_focal_loss(pred_masks, masks)
+                    dl = seg_dice_loss(pred_masks, masks)
+                    if model_name == "Video-Retina-UNETR":  # with the detection head
+                        cl, rl = det_loss(pred_classifications, pred_regressions, anchors_pos, annotations)
 
-            # Calculate the segmentation Dice score & IoU score
-            seg_dscore = seg_dice_score(pred_masks, masks)
-            seg_iscore = seg_iou_score(pred_masks, masks)
+                    # Calculate total loss
+                    loss = fl + dl
+                    if model_name == "Video-Retina-UNETR":  # with the detection head
+                        loss = loss + cl + rl
 
-            # Calculate EA, EAL score and line metrics
-            # Segmentation
-            (
-                mean_seg_ea_score,
-                mean_seg_eal_score,
-                seg_p_count,
-                seg_n_count,
-                seg_count_ea,
-                seg_count_eal,
-            ) = seg_line_evaluate(pred_masks, masks)
-            # Detection
-            if model_name == "Video-Retina-UNETR":
-                (
-                    mean_det_ea_score,
-                    mean_det_eal_score,
-                    det_p_count,
-                    det_n_count,
-                    det_count_ea,
-                    det_count_eal,
-                ) = det_line_evaluate(
-                    pred_classifications, pred_regressions, annotations, anchors_pos, images.shape[-1], images.shape[-2], with_aqe=with_aqe
-                )
+                    # Calculate the segmentation Dice score & IoU score
+                    seg_dscore = seg_dice_score(pred_masks, masks)
+                    seg_iscore = seg_iou_score(pred_masks, masks)
 
-            # Accumulate loss & score
-            total_loss += loss.item()
-            total_seg_focal_loss += fl.item()
-            total_seg_dice_loss += dl.item()
-            total_seg_dice_score += seg_dscore.item()
-            total_seg_iou_score += seg_iscore.item()
-            if model_name == "Video-Retina-UNETR":
-                total_det_cls_loss += cl.item()
-                total_det_reg_loss += rl.item()
+                    # use the refined mask if needed
+                    if model_name == "Video-Retina-UNETR" and with_aqe and refined_mask:
+                        pred_masks = aqe_refined_mask(
+                            pred_masks=pred_masks,
+                            pred_classifications=pred_classifications,
+                            pred_regressions=pred_regressions,
+                            anchors_pos=anchors_pos,
+                            conf_thresh=0.1,
+                        )
 
-            # Needle EA & EAL Score based metrics
-            # Segmentation
-            total_seg_ea_score += mean_seg_ea_score
-            total_seg_eal_score += mean_seg_eal_score
-            total_seg_p_count += seg_p_count
-            total_seg_n_count += seg_n_count
-            total_seg_count_ea += seg_count_ea  # [TP, FP, TN, FN]
-            total_seg_count_eal += seg_count_eal  # [TP, FP, TN, FN]
-            # Detection
-            if model_name == "Video-Retina-UNETR":
-                total_det_ea_score += mean_det_ea_score
-                total_det_eal_score += mean_det_eal_score
-                total_det_p_count += det_p_count
-                total_det_n_count += det_n_count
-                total_det_count_ea += det_count_ea  # [TP, FP, TN, FN]
-                total_det_count_eal += det_count_eal  # [TP, FP, TN, FN]
+                    # Calculate EA, EAL score and line metrics
+                    # Segmentation
+                    (
+                        mean_seg_ea_score,
+                        mean_seg_eal_score,
+                        seg_p_count,
+                        seg_n_count,
+                        seg_count_ea,
+                        seg_count_eal,
+                    ) = seg_line_evaluate(pred_masks, masks)
+                    # Detection
+                    if model_name == "Video-Retina-UNETR":
+                        (
+                            mean_det_ea_score,
+                            mean_det_eal_score,
+                            det_p_count,
+                            det_n_count,
+                            det_count_ea,
+                            det_count_eal,
+                        ) = det_line_evaluate(
+                            pred_classifications, pred_regressions, annotations, anchors_pos, images.shape[-1], images.shape[-2], with_aqe=with_aqe
+                        )
+
+                    # Accumulate loss & score
+                    total_loss += loss.item()
+                    total_seg_focal_loss += fl.item()
+                    total_seg_dice_loss += dl.item()
+                    total_seg_dice_score += seg_dscore.item()
+                    total_seg_iou_score += seg_iscore.item()
+                    if model_name == "Video-Retina-UNETR":
+                        total_det_cls_loss += cl.item()
+                        total_det_reg_loss += rl.item()
+
+                    # Needle EA & EAL Score based metrics
+                    # Segmentation
+                    total_seg_ea_score += mean_seg_ea_score
+                    total_seg_eal_score += mean_seg_eal_score
+                    total_seg_p_count += seg_p_count
+                    total_seg_n_count += seg_n_count
+                    total_seg_count_ea += seg_count_ea  # [TP, FP, TN, FN]
+                    total_seg_count_eal += seg_count_eal  # [TP, FP, TN, FN]
+                    # Detection
+                    if model_name == "Video-Retina-UNETR":
+                        total_det_ea_score += mean_det_ea_score
+                        total_det_eal_score += mean_det_eal_score
+                        total_det_p_count += det_p_count
+                        total_det_n_count += det_n_count
+                        total_det_count_ea += det_count_ea  # [TP, FP, TN, FN]
+                        total_det_count_eal += det_count_eal  # [TP, FP, TN, FN]
+
+                    pbar.update(1)
+
+        # for step, samples in enumerate(tqdm(loader)):
+        #     # Image data
+        #     images = samples["images"].to(device)  # [N, T, H, W]
+
+        #     # Segmentation ground truth masks
+        #     masks = samples["masks"].to(device)  # [N, T, H, W]
+        #     masks = masks[:, -1, :, :].unsqueeze(1)  # [N, 1, H, W]
+
+        #     # Detection ground truth annotations
+        #     if model_name == "Video-Retina-UNETR":
+        #         cals = samples["cals"].to(device)  # [N, T, 4]
+        #         labels = samples["labels"].to(device)  # [N, T]
+        #         labels = labels.unsqueeze(-1)  # [N, T, 1]
+        #         annotations = torch.cat([cals, labels], dim=-1)  # [N, T, 5]
+        #         annotations = annotations[:, -1, :].unsqueeze(1)  # [N, 1, 5]
+
+        #     # Forward pass
+        #     if model_name == "Video-Retina-UNETR":
+        #         pred_masks, pred_classifications, pred_regressions = model(images)
+        #         # [N, 1, H, W], [N, num_total_anchors, num_classes], [N, num_total_anchors, 4 or 5]
+        #     else:
+        #         pred_masks = model(images)  # [N, 1, H, W]
+
+        #     # Calculate loss (use the last frame as the target mask)
+        #     fl = seg_focal_loss(pred_masks, masks)
+        #     dl = seg_dice_loss(pred_masks, masks)
+        #     if model_name == "Video-Retina-UNETR":  # with the detection head
+        #         cl, rl = det_loss(pred_classifications, pred_regressions, anchors_pos, annotations)
+
+        #     # Calculate total loss
+        #     loss = fl + dl
+        #     if model_name == "Video-Retina-UNETR":  # with the detection head
+        #         loss = loss + cl + rl
+
+        #     # Calculate the segmentation Dice score & IoU score
+        #     seg_dscore = seg_dice_score(pred_masks, masks)
+        #     seg_iscore = seg_iou_score(pred_masks, masks)
+
+        #     # use the refined mask if needed
+        #     if model_name == "Video-Retina-UNETR" and with_aqe and refined_mask:
+        #         pred_masks = aqe_refined_mask(
+        #             pred_masks=pred_masks,
+        #             pred_classifications=pred_classifications,
+        #             pred_regressions=pred_regressions,
+        #             anchors_pos=anchors_pos,
+        #             conf_thresh=0.1,
+        #         )
+
+        #     # Calculate EA, EAL score and line metrics
+        #     # Segmentation
+        #     (
+        #         mean_seg_ea_score,
+        #         mean_seg_eal_score,
+        #         seg_p_count,
+        #         seg_n_count,
+        #         seg_count_ea,
+        #         seg_count_eal,
+        #     ) = seg_line_evaluate(pred_masks, masks)
+        #     # Detection
+        #     if model_name == "Video-Retina-UNETR":
+        #         (
+        #             mean_det_ea_score,
+        #             mean_det_eal_score,
+        #             det_p_count,
+        #             det_n_count,
+        #             det_count_ea,
+        #             det_count_eal,
+        #         ) = det_line_evaluate(
+        #             pred_classifications, pred_regressions, annotations, anchors_pos, images.shape[-1], images.shape[-2], with_aqe=with_aqe
+        #         )
+
+        #     # Accumulate loss & score
+        #     total_loss += loss.item()
+        #     total_seg_focal_loss += fl.item()
+        #     total_seg_dice_loss += dl.item()
+        #     total_seg_dice_score += seg_dscore.item()
+        #     total_seg_iou_score += seg_iscore.item()
+        #     if model_name == "Video-Retina-UNETR":
+        #         total_det_cls_loss += cl.item()
+        #         total_det_reg_loss += rl.item()
+
+        #     # Needle EA & EAL Score based metrics
+        #     # Segmentation
+        #     total_seg_ea_score += mean_seg_ea_score
+        #     total_seg_eal_score += mean_seg_eal_score
+        #     total_seg_p_count += seg_p_count
+        #     total_seg_n_count += seg_n_count
+        #     total_seg_count_ea += seg_count_ea  # [TP, FP, TN, FN]
+        #     total_seg_count_eal += seg_count_eal  # [TP, FP, TN, FN]
+        #     # Detection
+        #     if model_name == "Video-Retina-UNETR":
+        #         total_det_ea_score += mean_det_ea_score
+        #         total_det_eal_score += mean_det_eal_score
+        #         total_det_p_count += det_p_count
+        #         total_det_n_count += det_n_count
+        #         total_det_count_ea += det_count_ea  # [TP, FP, TN, FN]
+        #         total_det_count_eal += det_count_eal  # [TP, FP, TN, FN]
 
     results = {
-        "Loss": total_loss / len(loader),
-        "Segmentation Focal Loss": total_seg_focal_loss / len(loader),
-        "Segmentation Dice Loss": total_seg_dice_loss / len(loader),
-        "Segmentation Dice Score": total_seg_dice_score / len(loader),
-        "Segmentation IoU Score": total_seg_iou_score / len(loader),
-        "Segmentation Needle EA Score": total_seg_ea_score / len(loader),
-        "Segmentation Needle EAL Score": total_seg_eal_score / len(loader),
+        "Loss": total_loss / eval_total_steps,
+        "Segmentation Focal Loss": total_seg_focal_loss / eval_total_steps,
+        "Segmentation Dice Loss": total_seg_dice_loss / eval_total_steps,
+        "Segmentation Dice Score": total_seg_dice_score / eval_total_steps,
+        "Segmentation IoU Score": total_seg_iou_score / eval_total_steps,
+        "Segmentation Needle EA Score": total_seg_ea_score / eval_total_steps,
+        "Segmentation Needle EAL Score": total_seg_eal_score / eval_total_steps,
         "Needle Positive Count": total_seg_p_count,
         "Needle Negative Count": total_seg_n_count,
         # EA Score based
@@ -516,10 +636,10 @@ def evaluate(model, device, loader, seg_focal_loss, seg_dice_loss, model_name, d
     }
 
     if model_name == "Video-Retina-UNETR":
-        results["Detection Classification Loss"] = total_det_cls_loss / len(loader)
-        results["Detection Regression Loss"] = total_det_reg_loss / len(loader)
-        results["Detection Needle EA Score"] = total_det_ea_score / len(loader)
-        results["Detection Needle EAL Score"] = total_det_eal_score / len(loader)
+        results["Detection Classification Loss"] = total_det_cls_loss / eval_total_steps
+        results["Detection Regression Loss"] = total_det_reg_loss / eval_total_steps
+        results["Detection Needle EA Score"] = total_det_ea_score / eval_total_steps
+        results["Detection Needle EAL Score"] = total_det_eal_score / eval_total_steps
         # EA Score based
         results["Detection Needle TP Count"] = total_det_count_ea[0]
         results["Detection Needle FP Count"] = total_det_count_ea[1]
@@ -538,6 +658,58 @@ def evaluate(model, device, loader, seg_focal_loss, seg_dice_loss, model_name, d
         results["Detection Needle Specificity Score (EAL)"] = total_det_count_eal[2] / (total_det_count_eal[2] + total_det_count_eal[1] + 1e-6)
 
     return results
+
+    # results = {
+    #     "Loss": total_loss / len(loader),
+    #     "Segmentation Focal Loss": total_seg_focal_loss / len(loader),
+    #     "Segmentation Dice Loss": total_seg_dice_loss / len(loader),
+    #     "Segmentation Dice Score": total_seg_dice_score / len(loader),
+    #     "Segmentation IoU Score": total_seg_iou_score / len(loader),
+    #     "Segmentation Needle EA Score": total_seg_ea_score / len(loader),
+    #     "Segmentation Needle EAL Score": total_seg_eal_score / len(loader),
+    #     "Needle Positive Count": total_seg_p_count,
+    #     "Needle Negative Count": total_seg_n_count,
+    #     # EA Score based
+    #     "Segmentation Needle TP Count": total_seg_count_ea[0],
+    #     "Segmentation Needle FP Count": total_seg_count_ea[1],
+    #     "Segmentation Needle TN Count": total_seg_count_ea[2],
+    #     "Segmentation Needle FN Count": total_seg_count_ea[3],
+    #     "Segmentation Needle Recall Score": total_seg_count_ea[0] / (total_seg_count_ea[0] + total_seg_count_ea[3] + 1e-6),
+    #     "Segmentation Needle Precision Score": total_seg_count_ea[0] / (total_seg_count_ea[0] + total_seg_count_ea[1] + 1e-6),
+    #     "Segmentation Needle Specificity Score": total_seg_count_ea[2] / (total_seg_count_ea[2] + total_seg_count_ea[1] + 1e-6),
+    #     # EAL Score based
+    #     "Segmentation Needle TP Count (EAL)": total_seg_count_eal[0],
+    #     "Segmentation Needle FP Count (EAL)": total_seg_count_eal[1],
+    #     "Segmentation Needle TN Count (EAL)": total_seg_count_eal[2],
+    #     "Segmentation Needle FN Count (EAL)": total_seg_count_eal[3],
+    #     "Segmentation Needle Recall Score (EAL)": total_seg_count_eal[0] / (total_seg_count_eal[0] + total_seg_count_eal[3] + 1e-6),
+    #     "Segmentation Needle Precision Score (EAL)": total_seg_count_eal[0] / (total_seg_count_eal[0] + total_seg_count_eal[1] + 1e-6),
+    #     "Segmentation Needle Specificity Score (EAL)": total_seg_count_eal[2] / (total_seg_count_eal[2] + total_seg_count_eal[1] + 1e-6),
+    # }
+
+    # if model_name == "Video-Retina-UNETR":
+    #     results["Detection Classification Loss"] = total_det_cls_loss / len(loader)
+    #     results["Detection Regression Loss"] = total_det_reg_loss / len(loader)
+    #     results["Detection Needle EA Score"] = total_det_ea_score / len(loader)
+    #     results["Detection Needle EAL Score"] = total_det_eal_score / len(loader)
+    #     # EA Score based
+    #     results["Detection Needle TP Count"] = total_det_count_ea[0]
+    #     results["Detection Needle FP Count"] = total_det_count_ea[1]
+    #     results["Detection Needle TN Count"] = total_det_count_ea[2]
+    #     results["Detection Needle FN Count"] = total_det_count_ea[3]
+    #     results["Detection Needle Recall Score"] = total_det_count_ea[0] / (total_det_count_ea[0] + total_det_count_ea[3] + 1e-6)
+    #     results["Detection Needle Precision Score"] = total_det_count_ea[0] / (total_det_count_ea[0] + total_det_count_ea[1] + 1e-6)
+    #     results["Detection Needle Specificity Score"] = total_det_count_ea[2] / (total_det_count_ea[2] + total_det_count_ea[1] + 1e-6)
+    #     # EAL Score based
+    #     results["Detection Needle TP Count (EAL)"] = total_det_count_eal[0]
+    #     results["Detection Needle FP Count (EAL)"] = total_det_count_eal[1]
+    #     results["Detection Needle TN Count (EAL)"] = total_det_count_eal[2]
+    #     results["Detection Needle FN Count (EAL)"] = total_det_count_eal[3]
+    #     results["Detection Needle Recall Score (EAL)"] = total_det_count_eal[0] / (total_det_count_eal[0] + total_det_count_eal[3] + 1e-6)
+    #     results["Detection Needle Precision Score (EAL)"] = total_det_count_eal[0] / (total_det_count_eal[0] + total_det_count_eal[1] + 1e-6)
+    #     results["Detection Needle Specificity Score (EAL)"] = total_det_count_eal[2] / (total_det_count_eal[2] + total_det_count_eal[1] + 1e-6)
+
+    # return results
 
 
 def results_dictioanry(model_name, type):
