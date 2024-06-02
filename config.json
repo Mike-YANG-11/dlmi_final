@@ -64,8 +64,8 @@
     },
     
     "Train":{
-        "retina_head" : true,
-        "experiment_id" : "101",
+        "retina_head" : false,
+        "experiment_id" : "4_Mt91e-2",
         "visualize" : true,
         "det_num_classes" : 1,
         "siou_loss" : false,
@@ -74,13 +74,13 @@
         "epochs" : 30,
         "blr" : 1.0e-4,
         "accumulation_steps" : 8,
-        "loss" : "dice + focal + cls_focal + reg_l1"
+        "loss" : "dice"
     },
     
     "Validation":{
         "ema":0.9,
         "mean_teacher":true,
-        "consistency_weight":1e-4
+        "consistency_weight":1e-2
     },
     
     "Semi_Supervise":{
