@@ -198,7 +198,7 @@ def train(
                     # Calculate total loss
                     loss = dl + fl  # + il+  fl  #  ftl
                     if model_name == "Video-Retina-UNETR" and train_det_head:  # with the detection head
-                        loss = loss + cl + rl  ## TODO: adaptively modify the weight for the detection loss
+                        loss = loss + 0.2 * (cl + rl)  ## TODO: adaptively modify the weight for the detection loss
 
                     # Calculate the segmentation Dice score & IoU score
                     seg_dscore = seg_dice_score(pred_masks, masks)
@@ -734,7 +734,7 @@ def main(config):
                     # repeat the weights for the time window in patch linear projection layer
                     print(f"Copy {key} with shape {value.shape} to {model.patch_embed.proj.weight.shape}")
                     num_copy = config["Model"]["time_window"] // 3
-                    model.patch_embed.proj.weight.data.copy_((value / num_copy).repeat(1, num_copy, 1, 1))
+                    model.state_dict()[key].copy_((value / num_copy).repeat(1, num_copy, 1, 1))
                 else:
                     model.state_dict()[key].copy_(value)
             print(f"{vit_pretrained_weights} pretrained weights loaded!")

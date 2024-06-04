@@ -743,7 +743,8 @@ def mse_loss(input, target):
     assert input.size() == target.size()
     # input_softmax = F.softmax(input_logits, dim=1)
     # target_softmax = F.softmax(target_logits, dim=1)
-    return F.mse_loss(input, target, size_average=False) 
+    return F.mse_loss(input, target, size_average=False)
+
 
 def sigmoid_rampup(current, rampup_length=30):
     """Exponential rampup from https://arxiv.org/abs/1610.02242"""
