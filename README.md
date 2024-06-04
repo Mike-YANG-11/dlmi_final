@@ -24,6 +24,13 @@ dlmi_final/
 conda env create -f environment.yml
 conda activate dlmi_final
 ```
+## Implementation
+```
+# trainig
+python train.py
+# testing
+python test.py "<run id in wandb>" "<checkpoint path>"
+```
 ## File Functionalities
 - `dataset.py`
   - Contains the custom dataset and augmentation classes.
@@ -47,6 +54,10 @@ conda activate dlmi_final
   - The directory paths should be modified in the `construct_datasets()` function.
   - Hyperparameters can be modified in the `main()` function.
   - Pseudo label training is only activated if the mask threshold is set to non `null` value in `config.json`.
+- `test.py`
+  - Pass `run id` in wandb and checkpoint path when running, so that the model follows the setting during training.
+  - Inference medium and hard test folders in `config.json`
+  - Record results into `run.summary` in wandb.
 - `pseudo_label.py`
   - Evaluate the predicted masks of unlabeled dataset.
   - If the confidence of the mask is high enough, then `mask_XXXX_pl.png` is saved and recorded to `pl.csv` in the `pseudo_label` folder.

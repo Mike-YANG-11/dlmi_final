@@ -5,7 +5,7 @@
         
         "line_width": 20,
 
-        "Train_folder":{
+        "Train_folder_v1":{
             "easy2220" : "Sonosite_20231017_0833_2220frames_abc(易)",
             "easy1429" : "Sonosite_20231128_1220_1429frames_abc(易)(r)",
             "easy1063" : "Sonosite_20231128_1259_1063frames_abc(易)",
@@ -14,6 +14,45 @@
             "easy1058" : "Sonosite_20231128_1429_1058frams_abc(易)(R)",
             "easy284"  : "Sonosite_20231110_0903-2_284frames_abc(易)(R)",
             "medium1903" : "Sonosite_20231110_0910_1903frames_abc(中)(R)"
+        },
+
+        "Train_folder":{
+            "easy2220" : "Sonosite_20231017_0833_2220frames_abc(易)",
+            "easy1429" : "Sonosite_20231128_1220_1429frames_abc(易)(r)",
+            "easy1063" : "Sonosite_20231128_1259_1063frames_abc(易)",
+            "easy270"  : "Sonosite_20231128_1423-1_270frames_abc(易)(R)",
+            "easy1295" : "Sonosite_20231128_1423-2_1295frames_abc(易)(R)",
+            "easy1058" : "Sonosite_20231128_1429_1058frams_abc(易)(R)",
+            "easy284"  : "Sonosite_20231110_0903-2_284frames_abc(易)(R)",
+            "medium1903" : "Sonosite_20231110_0910_1903frames_abc(中)(R)",
+
+            "e231205_1244":"Sonosite_20231205_1244_295frames_abc(easy)",
+            "e231212_1050":"Sonosite_20231212_1050_350frames_abc(easy)",
+            "e231212_1217":"Sonosite_20231212_1217_502frames_abc(easy)",
+            "e231212_1313":"Sonosite_20231212_1313_1065frames_abc(easy)",
+            "e231219_1057":"Sonosite_20231219_1057_846frames_abc(easy)",
+            "e231219_1242":"Sonosite_20231219_1242_954frames_abc（easy）",
+            "e240102_1014":"Sonosite_20240102_1014_540frames_abc(easy)",
+            "e2401116_1110":"Sonosite_202401116_1110_276frames_abc(easy)",
+
+            "m231205_1126":"Sonosite_20231205_1126_983frames_abc（medium）",
+            "m231205_1326":"Sonosite_20231205_1326_1186frames_abc(medium)",
+            "m231208_0854":"Sonosite_20231208_0854_1870frames_abc(medium)",
+            "m231208_0903":"Sonosite_20231208_0903_914frames_abc(medium)",
+            "m231212_0909":"Sonosite_20231212_0909_437frames_abc(medium)",
+            "m231212_0941":"Sonosite_20231212_0941_689frames_abc(medium)",
+            "m231219_1020":"Sonosite_20231219_1020_1020frames_abc(medium)",
+            "m240102_0844":"Sonosite_20240102_0844_895frames_abc（medium)",
+            "m240102_0929":"Sonosite_20240102_0929_721frames_abc（medium)",
+            "m240102_0931":"Sonosite_20240102_0931_1216frames_abc(medium)",
+            "m240102_1329":"Sonosite_20240102_1329_1233frames_abc（medium)",
+            "m240102_1449":"Sonosite_20240102_1449_742frames_abc(medium)",
+
+            "h231003_1341":"Sonosite_20231003_1341_1052frames_abc(hard)",
+            "h231003_1413":"Sonosite_20231003_1413_1364frames_abc（hard)",
+            "h231212_0940":"Sonosite_20231212_0940_956frames_abc(hard)",
+            "h231219_1120":"Sonosite_20231219_1120_1437frames_abc(hard)",
+            "h231219_1122":"Sonosite_20231219_1122_570frames_abc（hard）"
         },
 
         "Val_folder":{
@@ -42,12 +81,27 @@
 
         "easy1941" : "Sonosite_20231017_0836_1941frames_abc(易)(validation dataset)",
 
-        "Unlabeled_folder":["Sonosite_20231205_1244_295frames_abc(easy)",
+        "Unlabeled_folder_v1":["Sonosite_20231205_1244_295frames_abc(easy)",
                         "Sonosite_20231212_0909_437frames_abc(medium)", 
                         "Sonosite_20240102_0929_721frames_abc（medium)",
                         "Sonosite_20240102_1449_742frames_abc(medium)",
                         "Sonosite_20231003_1413_1364frames_abc（hard)",
                         "Sonosite_20231219_1122_570frames_abc（hard）"
+                        ],
+
+        "Unlabeled_folder":[ "Sonosite_20240430沒有針/20240430_1224_abc",
+                        "Sonosite_20240430沒有針/20240430_1240_abc",
+                        "Sonosite_20240430沒有針/20240430_1402_abc",
+                        "Sonosite_20240430沒有針/20240430_1537_abc",
+                        "Sonosite_20240507沒有針/20240507_1324_abc",
+                        "Sonosite_20240507沒有針/20240507_1356_abc",
+                        "Sonosite_20240507沒有針/20240507_1430_abc",
+                        "Sonosite_20240507沒有針/20240507_1504_abc",
+                        "Sonosite_20240528_1036_338frams_abc",
+                        "Sonosite_20240528_1333_459frams_abc",
+                        "Sonosite_20240528_1334_459frams_abc",
+                        "Sonosite_20240528_1409_889frams_abc",
+                        "Sonosite_20240528_1447_683frams_abc"
                         ]
 
     },
@@ -64,24 +118,24 @@
     },
     
     "Train":{
-        "retina_head" : true,
-        "experiment_id" : "101",
+        "retina_head" : false,
+        "experiment_id" : "200",
         "visualize" : true,
         "det_num_classes" : 1,
         "siou_loss" : false,
         "with_aqe" : false,
         "batch_size" : 8,
-        "epochs" : 30,
+        "epochs" : 50,
         "blr" : 1.0e-4,
         "accumulation_steps" : 8,
-        "loss" : "dice + focal + cls_focal + reg_l1",
+        "loss" : "dice",
         "buffer_num_sample" : 8
     },
     
     "Validation":{
         "ema":0.9,
-        "mean_teacher":true,
-        "consistency_weight":1e-4
+        "mean_teacher":false,
+        "consistency_weight":1e-3
     },
     
     "Semi_Supervise":{
