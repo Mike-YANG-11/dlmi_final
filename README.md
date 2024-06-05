@@ -47,7 +47,7 @@ python test.py "<run id in wandb>" "<checkpoint path>"
 - `model.py`
   - Video-UNETR model architecture.
   - Video-Retina-UNETR model architecture.
-  - The model supports Cx224x224 input size, where C is an arbitrary number multiple of 3.
+  - The model supports Tx224x224 input size, where T is an arbitrary number multiple of 3.
 - `loss.py`
   - Loss functions for the segmentation and line detection tasks.
 - `evaluation.py`
