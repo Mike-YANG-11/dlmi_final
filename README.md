@@ -39,7 +39,7 @@ python test.py "<run id in wandb>" "<checkpoint path>"
 ```
 ## File Functionalities
 - `config.json`
-  - Settings of training hyperparameters and architecture designs can be modified in this file.
+  - Training hyperparameters and model architecture designs can be modified in this file.
 - `dataset.py`
   - Contains the custom dataset and augmentation classes.
   - Image reading can be speeded up with larger number of samples in a buffer. 
