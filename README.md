@@ -49,9 +49,9 @@ python test.py "<run id in wandb>" "<checkpoint path>"
   - Video-Retina-UNETR model architecture.
   - The model supports Tx224x224 input size, where T is an arbitrary number multiple of 3.
 - `loss.py`
-  - Loss functions for the segmentation and line detection tasks.
+  - Loss functions for segmentation and detection tasks.
 - `evaluation.py`
-  - Evaluation functions based on the segmentation results and detection results.
+  - Evaluation functions based on the segmentation and detection results.
 - `visualization.py`
   - Visualization function for showing the training data before training & prediction results during training.
   - The visualization function can be disabled by setting `visualize = False` in `config.json`.
