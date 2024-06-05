@@ -2,11 +2,13 @@
 
 import cv2
 
-import numpy as np
-
 import matplotlib.pyplot as plt
 
+import numpy as np
+
 import torch
+
+import tqdm
 
 from post_processing import detect_postprocessing
 
@@ -226,3 +228,112 @@ def show_preds_with_det_head(
         # break after showing the first 2 samples
         if sample == max_samples - 1:
             break
+
+
+def save_video(model, device, video_loader, image_size, buffer_num_sample, time_window, anchors_pos):
+    # Define the codec and create VideoWriter object
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    video_writer = cv2.VideoWriter("1320_hard.mp4", fourcc, 15.0, (image_size * 3 + 10, image_size))  # [W, H] !!!!!
+    model.to(device)
+    model.eval()
+
+    with torch.no_grad():
+        for step, buffer in enumerate(tqdm(video_loader)):
+            for t in range(buffer_num_sample):  # iterate over the buffer to get samples
+
+                # Initialize the video frame ready to be written ([H, W, 3] !!!)
+                video_frame_image = np.zeros((image_size, image_size * 3 + 10, 3)).astype(np.uint8)
+
+                original_image = buffer["images"][:, t + 2 : t + time_window, :, :].squeeze()  # [H, W]
+                vis_image = buffer["images"][:, t + 2 : t + time_window, :, :].squeeze()  # [H, W]
+                gt_mask = buffer["masks"][:, t + 2 : t + time_window, :, :].squeeze()  # [H, W]
+
+                # Convert the images to numpy arrays
+                original_image = original_image.cpu().numpy()
+                original_image = (original_image * 255).astype(np.uint8)
+                original_image = cv2.cvtColor(original_image, cv2.COLOR_GRAY2BGR)
+                original_image = cv2.putText(original_image, "Input", (10, 200), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+                # Convert the images to numpy arrays
+                vis_image = vis_image.cpu().numpy()
+                vis_image = (vis_image * 255).astype(np.uint8)
+                gt_mask = gt_mask.cpu().numpy()
+                gt_mask = (gt_mask * 255).astype(np.uint8)
+
+                # draw the gt mask on the original image (red)
+                vis_image = cv2.cvtColor(vis_image, cv2.COLOR_GRAY2BGR)
+                vis_image[gt_mask == 255] = [0, 255, 0]
+
+                # forward pass
+                input_images = buffer["images"][:, t : t + time_window, :, :].to(device)  # [1, T, H, W]
+                pred_masks, pred_classifications, pred_regressions = model(input_images)
+                # [1, 1, H, W], [1, num_total_anchors, num_classes], [1, num_total_anchors, 4]
+
+                # ------------------------------------------------------------------
+                # segmentation head
+                # ------------------------------------------------------------------
+                # draw the predicted mask countour on the original image (blue)
+                pred_masks = pred_masks.squeeze().cpu().numpy()
+                pred_masks = np.where(pred_masks > 0.5, 255, 0).astype(np.uint8)
+                # dilate the mask to make the contour thicker
+                kernel = np.ones((5, 5), np.uint8)
+                pred_masks = cv2.dilate(pred_masks, kernel, iterations=1)
+                contours, hierarchy = cv2.findContours(pred_masks, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+                vis_mask_image = cv2.drawContours(vis_image.copy(), contours, -1, (0, 20, 200), 2)
+
+                # show seg text on the image
+                vis_mask_image = cv2.putText(vis_mask_image, "Seg", (10, 200), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 20, 200), 2)
+
+                # ------------------------------------------------------------------
+                # detection head
+                # ------------------------------------------------------------------
+                # detection head post-processing
+                pred_cls = pred_classifications.squeeze(0)  # [num_total_anchors, num_classes]
+                pred_reg = pred_regressions.squeeze(0)  # [num_total_anchors, 5]
+
+                # get the top-k detection endpoints
+                topk_score, topk_id, topk_endpoints, topk_pred_cals, topk_pred_sigma = detect_postprocessing(
+                    pred_cls,
+                    pred_reg,
+                    anchors_pos,
+                    image_size,
+                    image_size,
+                    conf_thresh=0.1,
+                    topk=1,
+                    with_aqe=True,
+                )
+                top1_endpoints = topk_endpoints[0]
+                top1_pred_sigma = topk_pred_sigma[0]
+                topk_score = topk_score[0]
+
+                if topk_score < 0.1:
+                    top1_pred_sigma = 1
+
+                if top1_endpoints.sum() == 0:
+                    vis_detect_image = vis_image
+                else:
+                    x1, y1, x2, y2 = np.uint8(top1_endpoints.cpu())
+                    detect_line_mask = np.zeros((image_size, image_size)).astype(np.uint8)
+                    detect_line_mask = cv2.line(detect_line_mask, (x1, y1), (x2, y2), 255, 8)
+                    contours, hierarchy = cv2.findContours(detect_line_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+                    vis_detect_image = cv2.drawContours(vis_image, contours, -1, (0, 255, 255), 2)
+
+                # show the confidence score and sigma on the image
+                vis_detect_image = cv2.putText(
+                    vis_detect_image, f"Score: {topk_score:.2f}", (121, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1
+                )
+                vis_detect_image = cv2.putText(
+                    vis_detect_image, f"AQ: {(1 - top1_pred_sigma):.2f}", (145, 200), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1
+                )
+                vis_detect_image = cv2.putText(vis_detect_image, "Det", (10, 200), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                # ------------------------------------------------------------------
+
+                # write the video frame
+                video_frame_image[:, :image_size, :] = original_image
+                video_frame_image[:, image_size : image_size + 5, :] = 150
+                video_frame_image[:, image_size + 5 : image_size * 2 + 5, :] = vis_mask_image
+                video_frame_image[:, image_size * 2 + 5 : image_size * 2 + 10, :] = 150
+                video_frame_image[:, image_size * 2 + 10 :, :] = vis_detect_image
+                video_writer.write(video_frame_image)
+
+    video_writer.release()
