@@ -196,10 +196,10 @@ def train(
                         cl, rl = det_loss(pred_classifications, pred_regressions, anchors_pos, annotations)
 
                     # Calculate total loss
-                    loss = dl + fl  # + il #  ftl
+                    loss = dl  # + fl  # + il #  ftl
                     if model_name == "Video-Retina-UNETR" and train_det_head:  # with the detection head
-                        loss = loss + (cl + rl)*0.2  ## TODO: adaptively modify the weight for the detection loss
-                    
+                        loss = loss + 0.2 * (cl + rl)  ## TODO: adaptively modify the weight for the detection loss
+
                     # mean teacher: consistency cost
                     ## https://github.com/CuriousAI/mean-teacher/blob/master/pytorch/main.py#L260
                     if config["Validation"]["ema"] != 0 and config["Validation"]["mean_teacher"]:
@@ -223,8 +223,8 @@ def train(
                     seg_iscore = seg_iou_score(pred_masks, masks)
 
                     # update running loss & score
-                    running_results["Loss"] += dl.item() + consistency_l + fl.item()
-                    running_results["Segmentation Focal Loss"] += fl.item()
+                    running_results["Loss"] += dl.item() + consistency_l  # + fl.item()
+                    running_results["Segmentation Focal Loss"] += 0  # fl.item()
                     running_results["Segmentation Dice Loss"] += dl.item()
                     running_results["Segmentation Dice Score"] += seg_dscore.item()
                     running_results["Segmentation IoU Score"] += seg_iscore.item()
@@ -286,9 +286,9 @@ def train(
                 cl, rl = det_loss(pred_classifications, pred_regressions, anchors_pos, annotations)
 
             # Calculate total loss
-            loss = dl + fl  # + il+  fl  #  ftl
+            loss = dl  # + fl  # + il+  fl  #  ftl
             if model_name == "Video-Retina-UNETR" and train_det_head:  # with the detection head
-                loss = loss + (cl + rl)*0.2  ## TODO: adaptively modify the weight for the detection loss
+                loss = loss + 0.2 * (cl + rl)  ## TODO: adaptively modify the weight for the detection loss
 
             # mean teacher: consistency cost
             ## https://github.com/CuriousAI/mean-teacher/blob/master/pytorch/main.py#L260
@@ -313,8 +313,8 @@ def train(
             seg_iscore = seg_iou_score(pred_masks, masks)
 
             # update running loss & score
-            running_results["Loss"] += dl.item() + consistency_l + fl.item()
-            running_results["Segmentation Focal Loss"] += fl.item()
+            running_results["Loss"] += dl.item() + consistency_l  # + fl.item()
+            running_results["Segmentation Focal Loss"] += 0  # fl.item()
             running_results["Segmentation Dice Loss"] += dl.item()
             running_results["Segmentation Dice Score"] += seg_dscore.item()
             running_results["Segmentation IoU Score"] += seg_iscore.item()
@@ -754,7 +754,7 @@ def main(config):
                     # repeat the weights for the time window in patch linear projection layer
                     print(f"Copy {key} with shape {value.shape} to {model.patch_embed.proj.weight.shape}")
                     num_copy = config["Model"]["time_window"] // 3
-                    model.patch_embed.proj.weight.data.copy_((value / num_copy).repeat(1, num_copy, 1, 1))
+                    model.state_dict()[key].copy_((value / num_copy).repeat(1, num_copy, 1, 1))
                 else:
                     model.state_dict()[key].copy_(value)
             print(f"{vit_pretrained_weights} pretrained weights loaded!")

@@ -73,6 +73,7 @@ def construct_datasets(config, run):
 
     return medium_test_loader, hard_test_loader
 
+
 def visualize_sample(run, model, loader, model_name, device, anchors_pos=None):
     time_window = run.config["Time Window"]
     buffer_num_sample = run.config["Number of Samples in Buffer"]
@@ -115,7 +116,7 @@ def visualize_sample(run, model, loader, model_name, device, anchors_pos=None):
 
                 break
             break
-           
+
 
 def main(config, args):
     # --------------------------------------------------------------------------
@@ -198,12 +199,12 @@ def main(config, args):
                 else:
                     model.state_dict()[key].copy_(value)
             print(f"{vit_pretrained_weights} pretrained weights loaded!")
-    
+
     ## key names in ema_model & model are slightly different
     if run.config["EMA"] != 0:
         ema_model = torch.optim.swa_utils.AveragedModel(model, multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(config["Validation"]["ema"]))
         model = ema_model
-    
+
     if model_name == "Video-Retina-UNETR":
         image_size = run.config["Image Size"]
         anchor_generator = AnchorGenerator()
@@ -211,28 +212,30 @@ def main(config, args):
     else:
         anchors_pos = None
 
-
     # --------------------------------------------------------------------------
     # Read ckpt
     # --------------------------------------------------------------------------
     model.load_state_dict(torch.load(args.ckpt_path))
-    print(f'Ckpt loaded {args.ckpt_path}')
-    
+    print(f"Ckpt loaded {args.ckpt_path}")
+
     # --------------------------------------------------------------------------
     # Dataset Construction
     # --------------------------------------------------------------------------
     medium_test_loader, hard_test_loader = construct_datasets(config, run)
-    
+
     # --------------------------------------------------------------------------
     # Test
     # --------------------------------------------------------------------------
-    test_med_result = evaluate_test(run, model, device, medium_test_loader, model_name, anchors_pos=anchors_pos, with_aqe=run.config["Angle Quality Estimation"], refined_mask=False)
-    test_hard_result = evaluate_test(run, model, device, hard_test_loader, model_name, anchors_pos=anchors_pos, with_aqe=run.config["Angle Quality Estimation"], refined_mask=False)
+    with_aqe = run.config["Angle Quality Estimation"]
+    test_med_result = evaluate_test(
+        run, model, device, medium_test_loader, model_name, anchors_pos=anchors_pos, with_aqe=with_aqe, refined_mask=False
+    )
+    test_hard_result = evaluate_test(run, model, device, hard_test_loader, model_name, anchors_pos=anchors_pos, with_aqe=with_aqe, refined_mask=False)
 
     # --------------------------------------------------------------------------
     # Show result
-    # --------------------------------------------------------------------------    
-    
+    # --------------------------------------------------------------------------
+
     ## Record result to wandb
     for metric in test_med_result:
         run.summary[f"Test Med {metric}"] = test_med_result[metric]
@@ -253,6 +256,7 @@ if __name__ == "__main__":
     with open("config.json", "r", encoding="utf-8") as f:
         config = json.load(f)
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("run_id", type=str)
     parser.add_argument("ckpt_path", type=str)
