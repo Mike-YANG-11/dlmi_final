@@ -148,7 +148,7 @@ def main(config, args):
     # Create the model
     if model_name == "Video-UNETR":
         model = VideoUnetr(
-            img_size=config["Model"]["image_size"],
+            img_size=run.config["Image Size"],
             patch_size=config["Model"]["patch_size"],
             in_chans=config["Model"]["time_window"],
             embed_dim=config["Model"]["embed_dim"],
@@ -161,7 +161,7 @@ def main(config, args):
         )
     elif model_name == "Video-Retina-UNETR":
         model = VideoRetinaUnetr(
-            img_size=config["Model"]["image_size"],
+            img_size=run.config["Image Size"],
             patch_size=config["Model"]["patch_size"],
             in_chans=config["Model"]["time_window"],
             embed_dim=config["Model"]["embed_dim"],
@@ -171,8 +171,8 @@ def main(config, args):
             norm_layer=partial(nn.LayerNorm, eps=1e-6),
             skip_chans=config["Model"]["skip_chans"],
             out_chans=1,
-            det_num_classes=config["Train"]["det_num_classes"],
-            det_with_aqe=config["Train"]["with_aqe"],
+            det_num_classes=run.config["Detection Needle Classes"],
+            det_with_aqe=run.config["Angle Quality Estimation"],
         )
 
     # load pretrained ViT weights
@@ -226,8 +226,8 @@ def main(config, args):
     # --------------------------------------------------------------------------
     # Test
     # --------------------------------------------------------------------------
-    test_med_result = evaluate_test(run, model, device, medium_test_loader, model_name, anchors_pos=anchors_pos, with_aqe=False, refined_mask=False)
-    test_hard_result = evaluate_test(run, model, device, hard_test_loader, model_name, anchors_pos=anchors_pos, with_aqe=False, refined_mask=False)
+    test_med_result = evaluate_test(run, model, device, medium_test_loader, model_name, anchors_pos=anchors_pos, with_aqe=run.config["Angle Quality Estimation"], refined_mask=False)
+    test_hard_result = evaluate_test(run, model, device, hard_test_loader, model_name, anchors_pos=anchors_pos, with_aqe=run.config["Angle Quality Estimation"], refined_mask=False)
 
     # --------------------------------------------------------------------------
     # Show result
@@ -260,3 +260,5 @@ if __name__ == "__main__":
     main(config, args)
 
 ## python test.py "yryi2bdx" "./video_unetr_checkpoints/video_unetr_200new.pth"
+## python test.py "or2gd5x3" "./video_retina_unetr_checkpoints/video_retina_unetr_202.pth"
+## python test.py "uw2wdvo0" "./video_retina_unetr_checkpoints/video_retina_unetr_204.pth"

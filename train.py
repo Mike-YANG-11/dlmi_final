@@ -196,9 +196,9 @@ def train(
                         cl, rl = det_loss(pred_classifications, pred_regressions, anchors_pos, annotations)
 
                     # Calculate total loss
-                    loss = dl #+ fl  # + il #  ftl
+                    loss = dl + fl  # + il #  ftl
                     if model_name == "Video-Retina-UNETR" and train_det_head:  # with the detection head
-                        loss = loss + cl + rl  ## TODO: adaptively modify the weight for the detection loss
+                        loss = loss + (cl + rl)*0.2  ## TODO: adaptively modify the weight for the detection loss
                     
                     # mean teacher: consistency cost
                     ## https://github.com/CuriousAI/mean-teacher/blob/master/pytorch/main.py#L260
@@ -223,8 +223,8 @@ def train(
                     seg_iscore = seg_iou_score(pred_masks, masks)
 
                     # update running loss & score
-                    running_results["Loss"] += dl.item() + consistency_l #+ fl.item()
-                    running_results["Segmentation Focal Loss"] += 0#fl.item()
+                    running_results["Loss"] += dl.item() + consistency_l + fl.item()
+                    running_results["Segmentation Focal Loss"] += fl.item()
                     running_results["Segmentation Dice Loss"] += dl.item()
                     running_results["Segmentation Dice Score"] += seg_dscore.item()
                     running_results["Segmentation IoU Score"] += seg_iscore.item()
@@ -286,9 +286,9 @@ def train(
                 cl, rl = det_loss(pred_classifications, pred_regressions, anchors_pos, annotations)
 
             # Calculate total loss
-            loss = dl #+ fl  # + il+  fl  #  ftl
+            loss = dl + fl  # + il+  fl  #  ftl
             if model_name == "Video-Retina-UNETR" and train_det_head:  # with the detection head
-                loss = loss + cl + rl  ## TODO: adaptively modify the weight for the detection loss
+                loss = loss + (cl + rl)*0.2  ## TODO: adaptively modify the weight for the detection loss
 
             # mean teacher: consistency cost
             ## https://github.com/CuriousAI/mean-teacher/blob/master/pytorch/main.py#L260
@@ -313,8 +313,8 @@ def train(
             seg_iscore = seg_iou_score(pred_masks, masks)
 
             # update running loss & score
-            running_results["Loss"] += dl.item() + consistency_l #+ fl.item()
-            running_results["Segmentation Focal Loss"] += 0#fl.item()
+            running_results["Loss"] += dl.item() + consistency_l + fl.item()
+            running_results["Segmentation Focal Loss"] += fl.item()
             running_results["Segmentation Dice Loss"] += dl.item()
             running_results["Segmentation Dice Score"] += seg_dscore.item()
             running_results["Segmentation IoU Score"] += seg_iscore.item()
