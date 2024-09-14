@@ -1,7 +1,7 @@
 # Retina-UNETR for Ultrasound Video Needle Localization
 - Report: <https://drive.google.com/file/d/10ABVJSY6566dyJyar201z6DHuYUny7MM/view?usp=drive_link>
 ## Video Demo
-https://github.com/user-attachments/assets/eb235474-95b2-45d1-a904-443c536afcb8
+https://github.com/user-attachments/assets/102e531d-8450-4b89-8f05-c5034d7b6b11
 ***
 ## Architecture
 ![model](https://github.com/user-attachments/assets/7895920a-4948-4417-9ee5-80a40a6cff72)
