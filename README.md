@@ -2,7 +2,7 @@
 - Report: <https://drive.google.com/file/d/10ABVJSY6566dyJyar201z6DHuYUny7MM/view?usp=drive_link>
 ## Video Demo
 ***
-https://github.com/user-attachments/assets/805ade42-fe6b-4f9f-a53c-fc5a2def247e
+<video src="https://github.com/user-attachments/assets/7656418a-f9ca-4373-9d00-d50d656d399b"></video>
 ***
 ## Architecture
 ![model](https://github.com/user-attachments/assets/7895920a-4948-4417-9ee5-80a40a6cff72)
