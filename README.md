@@ -1,5 +1,7 @@
 # Retina-UNETR for Ultrasound Video Needle Localization
-- Report: <https://drive.google.com/file/d/10ABVJSY6566dyJyar201z6DHuYUny7MM/view?usp=drive_link>
+- Proposed a novel framework to jointly segment and detect the needle in ultrasound videos
+## Report
+- <https://drive.google.com/file/d/10ABVJSY6566dyJyar201z6DHuYUny7MM/view?usp=drive_link>
 ## Video Demo
 https://github.com/user-attachments/assets/3d6e06e6-0c63-4565-bf3c-ea631fd1cf98
 ***
